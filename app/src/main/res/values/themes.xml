@@ -1,4 +1,7 @@
 <resources>
-
-    <style name="Theme.MinimalTCLTVLauncher" parent="Theme.AppCompat.DayNight.NoActionBar" />
+    <!-- Light theme window background - matches DesignColors.Background (#F5F0E1) -->
+    <style name="Theme.MinimalTCLTVLauncher" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:windowIsTranslucent">false</item>
+    </style>
 </resources>

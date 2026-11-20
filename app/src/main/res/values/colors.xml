@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Window background matching Compose background (#0B0D11) -->
+    <color name="window_background">#FF0B0D11</color>
+</resources>

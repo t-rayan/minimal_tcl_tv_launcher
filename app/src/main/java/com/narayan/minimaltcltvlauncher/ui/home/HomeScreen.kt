@@ -3,7 +3,10 @@ package com.narayan.minimaltcltvlauncher.ui.home
 import android.Manifest
 import android.app.Application
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothClass
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -15,15 +18,21 @@ import android.graphics.drawable.Drawable
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
-import androidx.compose.animation.core.animateDpAsState
+import android.util.LruCache
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -32,27 +41,24 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -63,15 +69,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -85,7 +99,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Icon
 import com.narayan.minimaltcltvlauncher.model.AppInfo
-import com.narayan.minimaltcltvlauncher.ui.theme.FavoriteStar
 import com.narayan.minimaltcltvlauncher.viewmodel.HomeViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -93,17 +106,50 @@ import java.util.Locale
 import kotlin.math.min
 
 private const val TAG = "MinimalTvHomeScreen"
+private val FavoriteStar = Color(0xFFFFD54F)
+private val AlmostWhiteBackground = Color(0xFFF6F7F9)
+private val LightInkPrimary = Color(0xFF141820)
+private val LightInkSecondary = Color(0xFF3A4150)
+private val SystemSettingsAccent = Color(0xFF1E64E8)
+private val SystemSettingsAccentFocused = Color(0xFF3B7CF5)
 
-private enum class ActiveDrawer {
-    NONE,
+private val iconBitmapCache = object : LruCache<String, Bitmap>(128) {}
+
+private enum class ActiveView {
+    HOME,
+    ALL_APPS,
+    CONNECTED_DEVICES,
+    SETTINGS
+}
+
+private enum class LeftMenuItem {
+    HOME,
+    SETTINGS,
     ALL_APPS,
     CONNECTED_DEVICES
+}
+
+private enum class PillGlyphKind {
+    VECTOR,
+    APP_GRID,
+    DEVICE_LINK
+}
+
+private enum class DeviceIconKind {
+    HEADPHONES,
+    CONTROLLER,
+    DISPLAY,
+    SPEAKER,
+    MOBILE,
+    GENERIC
 }
 
 private data class ConnectedDeviceItem(
     val name: String,
     val subtitle: String,
-    val icon: ImageVector,
+    val address: String? = null,
+    val isConnected: Boolean = false,
+    val iconKind: DeviceIconKind,
     val actionIntent: Intent? = null
 )
 
@@ -180,14 +226,59 @@ fun HomeScreen(
     val apps by viewModel.apps.collectAsStateWithLifecycle()
     val favorites by viewModel.favorites.collectAsStateWithLifecycle()
 
-    var activeDrawer by remember { mutableStateOf(ActiveDrawer.NONE) }
+    var activeView by remember { mutableStateOf(ActiveView.HOME) }
+    var activeMenu by remember { mutableStateOf(LeftMenuItem.HOME) }
+    var isDarkTheme by remember { mutableStateOf(false) }
+
     val centerRowFocusRequester = remember { FocusRequester() }
+    val allAppsFirstFocusRequester = remember { FocusRequester() }
+    val connectedDevicesFirstFocusRequester = remember { FocusRequester() }
+    val settingsFirstFocusRequester = remember { FocusRequester() }
+
+    val returnToHome = {
+        activeView = ActiveView.HOME
+        activeMenu = LeftMenuItem.HOME
+    }
 
     var currentTime by remember { mutableStateOf(formatTime()) }
+    var currentDay by remember { mutableStateOf(formatDayName()) }
+    var currentDate by remember { mutableStateOf(formatDate()) }
     LaunchedEffect(Unit) {
         while (true) {
             currentTime = formatTime()
+            currentDay = formatDayName()
+            currentDate = formatDate()
             kotlinx.coroutines.delay(60_000L)
+        }
+    }
+
+    LaunchedEffect(activeView) {
+        when (activeView) {
+            ActiveView.ALL_APPS -> {
+                kotlinx.coroutines.delay(50L)
+                try {
+                    allAppsFirstFocusRequester.requestFocus()
+                } catch (_: Exception) {
+                }
+            }
+
+            ActiveView.CONNECTED_DEVICES -> {
+                kotlinx.coroutines.delay(50L)
+                try {
+                    connectedDevicesFirstFocusRequester.requestFocus()
+                } catch (_: Exception) {
+                }
+            }
+
+            ActiveView.SETTINGS -> {
+                kotlinx.coroutines.delay(50L)
+                try {
+                    settingsFirstFocusRequester.requestFocus()
+                } catch (_: Exception) {
+                }
+            }
+
+            ActiveView.HOME -> Unit
         }
     }
 
@@ -195,252 +286,214 @@ fun HomeScreen(
         resolveSixHomeSlots(context, apps)
     }
 
-    val backgroundColor = Color(0xFF0B0D11)
-    val wallpaperBitmap = remember { loadWallpaperBitmap(context) }
+    val canvasBackground = if (isDarkTheme) Color(0xFF0B0D11) else AlmostWhiteBackground
+    val useLightSurfaceContent = !isDarkTheme
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(backgroundColor)
+            .background(canvasBackground)
     ) {
-        if (wallpaperBitmap != null) {
-            Image(
-                bitmap = wallpaperBitmap,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0x990B0D11))
-            )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 108.dp, end = 24.dp, top = 40.dp, bottom = 28.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            when (activeView) {
+                ActiveView.HOME -> {
+                    CenteredSixAppRow(
+                        slots = homeSlots,
+                        viewModel = viewModel,
+                        favorites = favorites,
+                        context = context,
+                        currentDay = currentDay,
+                        currentDate = currentDate,
+                        currentTime = currentTime,
+                        useLightSurfaceContent = useLightSurfaceContent,
+                        firstItemFocusRequester = centerRowFocusRequester,
+                        enabled = true
+                    )
+                }
+
+                ActiveView.ALL_APPS -> {
+                    AllAppsDrawerPanel(
+                        apps = apps,
+                        viewModel = viewModel,
+                        context = context,
+                        useLightSurfaceContent = useLightSurfaceContent,
+                        firstItemFocusRequester = allAppsFirstFocusRequester,
+                        onClose = returnToHome,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                ActiveView.CONNECTED_DEVICES -> {
+                    ConnectedDevicesDrawerPanel(
+                        context = context,
+                        useLightSurfaceContent = useLightSurfaceContent,
+                        firstItemFocusRequester = connectedDevicesFirstFocusRequester,
+                        onClose = returnToHome,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                ActiveView.SETTINGS -> {
+                    SettingsMainView(
+                        isDarkTheme = isDarkTheme,
+                        useLightSurfaceContent = useLightSurfaceContent,
+                        firstFocusRequester = settingsFirstFocusRequester,
+                        onOpenSystemSettings = { launchSystemSettings(context) },
+                        onToggleTheme = { isDarkTheme = !isDarkTheme },
+                        onBack = returnToHome,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
         }
 
-        // Far-left vertical frosted pill menu
         Box(
             modifier = Modifier
                 .align(Alignment.CenterStart)
-                .padding(start = 20.dp, bottom = 56.dp)
+                .padding(start = 20.dp)
         ) {
             LeftVerticalPillMenu(
-                activeDrawer = activeDrawer,
+                activeMenu = activeMenu,
+                useLightSurfaceContent = useLightSurfaceContent,
+                onMenuFocus = { focusedItem ->
+                    activeMenu = focusedItem
+                },
                 onHomeClick = {
-                    activeDrawer = ActiveDrawer.NONE
+                    activeMenu = LeftMenuItem.HOME
+                    activeView = ActiveView.HOME
                     try {
                         centerRowFocusRequester.requestFocus()
                     } catch (_: Exception) {
                     }
                 },
                 onSettingsClick = {
-                    activeDrawer = ActiveDrawer.NONE
-                    launchSystemSettings(context)
+                    if (activeView == ActiveView.SETTINGS) {
+                        returnToHome()
+                    } else {
+                        activeMenu = LeftMenuItem.SETTINGS
+                        activeView = ActiveView.SETTINGS
+                    }
                 },
                 onAllAppsClick = {
-                    activeDrawer = if (activeDrawer == ActiveDrawer.ALL_APPS) {
-                        ActiveDrawer.NONE
+                    if (activeView == ActiveView.ALL_APPS) {
+                        returnToHome()
                     } else {
-                        ActiveDrawer.ALL_APPS
+                        activeMenu = LeftMenuItem.ALL_APPS
+                        activeView = ActiveView.ALL_APPS
                     }
                 },
                 onConnectedDevicesClick = {
-                    activeDrawer = if (activeDrawer == ActiveDrawer.CONNECTED_DEVICES) {
-                        ActiveDrawer.NONE
+                    if (activeView == ActiveView.CONNECTED_DEVICES) {
+                        returnToHome()
                     } else {
-                        ActiveDrawer.CONNECTED_DEVICES
+                        activeMenu = LeftMenuItem.CONNECTED_DEVICES
+                        activeView = ActiveView.CONNECTED_DEVICES
                     }
                 }
-            )
-        }
-
-        // Main centered 6-app row
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(start = 84.dp, end = 24.dp, bottom = 56.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            CenteredSixAppRow(
-                slots = homeSlots,
-                viewModel = viewModel,
-                favorites = favorites,
-                context = context,
-                firstItemFocusRequester = centerRowFocusRequester
-            )
-        }
-
-        // Slide-over drawer for All Apps or Connected Devices
-        if (activeDrawer != ActiveDrawer.NONE) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.52f))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) {
-                        activeDrawer = ActiveDrawer.NONE
-                    }
-            ) {
-                when (activeDrawer) {
-                    ActiveDrawer.ALL_APPS -> {
-                        AllAppsDrawerPanel(
-                            apps = apps,
-                            viewModel = viewModel,
-                            context = context,
-                            onClose = { activeDrawer = ActiveDrawer.NONE },
-                            modifier = Modifier
-                                .align(Alignment.CenterStart)
-                                .padding(start = 88.dp, top = 24.dp, bottom = 76.dp)
-                        )
-                    }
-
-                    ActiveDrawer.CONNECTED_DEVICES -> {
-                        ConnectedDevicesDrawerPanel(
-                            context = context,
-                            onClose = { activeDrawer = ActiveDrawer.NONE },
-                            modifier = Modifier
-                                .align(Alignment.CenterStart)
-                                .padding(start = 88.dp, top = 24.dp, bottom = 76.dp)
-                        )
-                    }
-
-                    ActiveDrawer.NONE -> Unit
-                }
-            }
-        }
-
-        // Transparent bottom footer
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color.Transparent)
-                .align(Alignment.BottomCenter)
-        ) {
-            PanelFooter(currentTime = currentTime)
-        }
-    }
-}
-
-@Composable
-private fun LeftVerticalPillMenu(
-    activeDrawer: ActiveDrawer,
-    onHomeClick: () -> Unit,
-    onSettingsClick: () -> Unit,
-    onAllAppsClick: () -> Unit,
-    onConnectedDevicesClick: () -> Unit
-) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = Color.White.copy(alpha = 0.10f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
-        shadowElevation = 8.dp
-    ) {
-        Column(
-            modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            FrostedPillIconButton(
-                icon = Icons.Filled.Home,
-                contentDescription = "Home",
-                isSelected = activeDrawer == ActiveDrawer.NONE,
-                onClick = onHomeClick
-            )
-            FrostedPillIconButton(
-                icon = Icons.Filled.Settings,
-                contentDescription = "Settings",
-                isSelected = false,
-                onClick = onSettingsClick
-            )
-            FrostedPillIconButton(
-                icon = Icons.Filled.Menu,
-                contentDescription = "All Apps",
-                isSelected = activeDrawer == ActiveDrawer.ALL_APPS,
-                onClick = onAllAppsClick
-            )
-            FrostedPillIconButton(
-                icon = Icons.Filled.AccountCircle,
-                contentDescription = "Connected Devices",
-                isSelected = activeDrawer == ActiveDrawer.CONNECTED_DEVICES,
-                onClick = onConnectedDevicesClick
             )
         }
     }
 }
 
 @Composable
-private fun FrostedPillIconButton(
-    icon: ImageVector,
-    contentDescription: String,
-    isSelected: Boolean,
-    onClick: () -> Unit
+private fun TopHeaderWithCenteredTitle(
+    title: String,
+    useLightSurfaceContent: Boolean,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    var isFocused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (isFocused) 1.12f else 1f,
-        label = "pillBtnScale"
-    )
-    val bgColor = when {
-        isFocused -> Color.White.copy(alpha = 0.28f)
-        isSelected -> Color.White.copy(alpha = 0.16f)
-        else -> Color.White.copy(alpha = 0.05f)
-    }
+    val titleColor = if (useLightSurfaceContent) LightInkPrimary else Color.White
 
     Box(
-        modifier = Modifier
-            .size(44.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .clip(CircleShape)
-            .background(bgColor)
-            .border(
-                width = if (isFocused) 1.5.dp else 0.dp,
-                color = if (isFocused) Color.White.copy(alpha = 0.65f) else Color.Transparent,
-                shape = CircleShape
-            )
-            .onFocusChanged { isFocused = it.isFocused }
-            .focusable()
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
+        modifier = modifier.fillMaxWidth()
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = contentDescription,
-            tint = Color.White,
-            modifier = Modifier.size(22.dp)
+        Box(modifier = Modifier.align(Alignment.CenterStart)) {
+            BackIconButton(
+                onClick = onBack,
+                useLightSurfaceContent = useLightSurfaceContent
+            )
+        }
+        Text(
+            text = title,
+            fontSize = 34.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = titleColor,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.align(Alignment.Center)
         )
     }
 }
 
+@OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun AllAppsDrawerPanel(
-    apps: List<AppInfo>,
-    viewModel: HomeViewModel,
-    context: Context,
-    onClose: () -> Unit,
+private fun SettingsMainView(
+    isDarkTheme: Boolean,
+    useLightSurfaceContent: Boolean,
+    firstFocusRequester: FocusRequester,
+    onOpenSystemSettings: () -> Unit,
+    onToggleTheme: () -> Unit,
+    onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val sortedApps = remember(apps) {
-        apps.sortedBy { it.label.lowercase(Locale.ROOT) }
-    }
+    var isThemeToggleFocused by remember { mutableStateOf(false) }
+    var isOpenSystemFocused by remember { mutableStateOf(false) }
 
-    Surface(
+    val themeToggleScale by animateFloatAsState(
+        targetValue = if (isThemeToggleFocused) 1.02f else 1f,
+        label = "themeToggleScale"
+    )
+    val openSystemScale by animateFloatAsState(
+        targetValue = if (isOpenSystemFocused) 1.02f else 1f,
+        label = "openSystemSettingsScale"
+    )
+
+    val primaryTextColor = if (useLightSurfaceContent) LightInkPrimary else Color.White
+    val secondaryTextColor = if (useLightSurfaceContent) LightInkSecondary else Color.White.copy(alpha = 0.8f)
+    val cardBgColor = if (useLightSurfaceContent) Color.White else Color.White.copy(alpha = 0.08f)
+    val focusedBgColor = if (useLightSurfaceContent) LightInkPrimary else Color.White
+    val focusedTextColor = if (useLightSurfaceContent) Color.White else LightInkPrimary
+
+    Column(
         modifier = modifier
-            .widthIn(min = 320.dp, max = 440.dp)
-            .fillMaxHeight(),
-        shape = RoundedCornerShape(24.dp),
-        color = Color(0xCC141820),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
-        shadowElevation = 16.dp
+            .trapDrawerFocus(onBack)
+            .padding(start = 12.dp, end = 24.dp, top = 28.dp, bottom = 24.dp),
+        horizontalAlignment = Alignment.Start,
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Column(
+        TopHeaderWithCenteredTitle(
+            title = "App setting",
+            useLightSurfaceContent = useLightSurfaceContent,
+            onBack = onBack
+        )
+
+        Box(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .fillMaxWidth()
+                .graphicsLayer {
+                    scaleX = themeToggleScale
+                    scaleY = themeToggleScale
+                }
+                .focusRequester(firstFocusRequester)
+                .clip(RoundedCornerShape(16.dp))
+                .background(if (isThemeToggleFocused) focusedBgColor else cardBgColor)
+                .border(
+                    width = 1.dp,
+                    color = if (isThemeToggleFocused) focusedBgColor else primaryTextColor.copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(16.dp)
+                )
+                .onFocusChanged { isThemeToggleFocused = it.isFocused }
+                .focusable()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onToggleTheme
+                )
+                .padding(horizontal = 20.dp, vertical = 16.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -448,58 +501,701 @@ private fun AllAppsDrawerPanel(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "All Apps (${sortedApps.size})",
-                    fontSize = 18.sp,
+                    text = "Switch Dark / Light Theme",
+                    fontSize = 17.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = Color.White
+                    color = if (isThemeToggleFocused) focusedTextColor else primaryTextColor
                 )
-                DrawerActionChip(
-                    icon = Icons.Filled.Close,
-                    label = "Close",
-                    onClick = onClose
+                Text(
+                    text = if (isDarkTheme) "Dark" else "Light",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (isThemeToggleFocused) focusedTextColor.copy(alpha = 0.85f) else secondaryTextColor
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "System Settings",
+                fontSize = 22.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = primaryTextColor
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        scaleX = openSystemScale
+                        scaleY = openSystemScale
+                    }
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(if (isOpenSystemFocused) SystemSettingsAccentFocused else SystemSettingsAccent)
+                    .border(
+                        width = if (isOpenSystemFocused) 2.dp else 1.dp,
+                        color = if (isOpenSystemFocused) Color.White else SystemSettingsAccentFocused.copy(alpha = 0.7f),
+                        shape = RoundedCornerShape(16.dp)
+                    )
+                    .onFocusChanged { isOpenSystemFocused = it.isFocused }
+                    .focusable()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onOpenSystemSettings
+                    )
+                    .padding(horizontal = 20.dp, vertical = 16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Open System Settings",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.Settings,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun Modifier.trapDrawerFocus(onClose: () -> Unit): Modifier {
+    return this
+        .focusGroup()
+        .onPreviewKeyEvent { event ->
+            if (event.type == KeyEventType.KeyDown && event.key == Key.Back) {
+                onClose()
+                true
+            } else {
+                false
+            }
+        }
+}
+
+@Composable
+private fun LeftVerticalPillMenu(
+    activeMenu: LeftMenuItem,
+    useLightSurfaceContent: Boolean,
+    onMenuFocus: (LeftMenuItem) -> Unit,
+    onHomeClick: () -> Unit,
+    onSettingsClick: () -> Unit,
+    onAllAppsClick: () -> Unit,
+    onConnectedDevicesClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier.background(Color.Transparent)
+    ) {
+        Column(
+            modifier = Modifier.padding(vertical = 12.dp, horizontal = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            FrostedPillIconButton(
+                icon = Icons.Filled.Home,
+                glyphKind = PillGlyphKind.VECTOR,
+                contentDescription = "Home",
+                isSelected = activeMenu == LeftMenuItem.HOME,
+                useLightSurfaceContent = useLightSurfaceContent,
+                onFocus = { onMenuFocus(LeftMenuItem.HOME) },
+                onClick = onHomeClick
+            )
+            FrostedPillIconButton(
+                icon = Icons.Filled.Settings,
+                glyphKind = PillGlyphKind.VECTOR,
+                contentDescription = "Settings",
+                isSelected = activeMenu == LeftMenuItem.SETTINGS,
+                useLightSurfaceContent = useLightSurfaceContent,
+                onFocus = { onMenuFocus(LeftMenuItem.SETTINGS) },
+                onClick = onSettingsClick
+            )
+            FrostedPillIconButton(
+                icon = Icons.Filled.Menu,
+                glyphKind = PillGlyphKind.APP_GRID,
+                contentDescription = "All Apps",
+                isSelected = activeMenu == LeftMenuItem.ALL_APPS,
+                useLightSurfaceContent = useLightSurfaceContent,
+                onFocus = { onMenuFocus(LeftMenuItem.ALL_APPS) },
+                onClick = onAllAppsClick
+            )
+            FrostedPillIconButton(
+                icon = Icons.Filled.AccountCircle,
+                glyphKind = PillGlyphKind.DEVICE_LINK,
+                contentDescription = "Connected Devices",
+                isSelected = activeMenu == LeftMenuItem.CONNECTED_DEVICES,
+                useLightSurfaceContent = useLightSurfaceContent,
+                onFocus = { onMenuFocus(LeftMenuItem.CONNECTED_DEVICES) },
+                onClick = onConnectedDevicesClick
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun FrostedPillIconButton(
+    icon: ImageVector,
+    glyphKind: PillGlyphKind,
+    contentDescription: String,
+    isSelected: Boolean,
+    useLightSurfaceContent: Boolean,
+    onFocus: () -> Unit,
+    onClick: () -> Unit
+) {
+    var isFocused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (isFocused) 1.15f else if (isSelected) 1.06f else 1f,
+        label = "pillBtnScale"
+    )
+    val baseInk = if (useLightSurfaceContent) LightInkPrimary else Color.White
+    val bgColor = when {
+        isFocused -> baseInk.copy(alpha = 0.16f)
+        isSelected -> baseInk.copy(alpha = 0.10f)
+        else -> Color.Transparent
+    }
+    val iconTint = when {
+        isFocused || isSelected -> baseInk
+        else -> baseInk.copy(alpha = 0.65f)
+    }
+
+    Box(
+        modifier = Modifier
+            .size(42.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(CircleShape)
+            .background(bgColor)
+            .onFocusChanged { focusState ->
+                val nowFocused = focusState.isFocused
+                isFocused = nowFocused
+                if (nowFocused) {
+                    onFocus()
+                }
+            }
+            .focusable()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        when (glyphKind) {
+            PillGlyphKind.APP_GRID -> {
+                Canvas(modifier = Modifier.size(20.dp)) {
+                    val gap = size.minDimension * 0.18f
+                    val cell = (size.minDimension - gap) / 2f
+                    val radius = CornerRadius(cell * 0.3f, cell * 0.3f)
+                    for (row in 0..1) {
+                        for (col in 0..1) {
+                            drawRoundRect(
+                                color = iconTint,
+                                topLeft = Offset(
+                                    x = col * (cell + gap),
+                                    y = row * (cell + gap)
+                                ),
+                                size = Size(cell, cell),
+                                cornerRadius = radius
+                            )
+                        }
+                    }
+                }
+            }
+
+            PillGlyphKind.DEVICE_LINK -> {
+                Canvas(modifier = Modifier.size(21.dp)) {
+                    val stroke = size.minDimension * 0.09f
+                    val screenW = size.width * 0.86f
+                    val screenH = size.height * 0.56f
+                    val left = (size.width - screenW) / 2f
+                    val top = size.height * 0.12f
+                    drawRoundRect(
+                        color = iconTint,
+                        topLeft = Offset(left, top),
+                        size = Size(screenW, screenH),
+                        cornerRadius = CornerRadius(stroke * 1.5f, stroke * 1.5f),
+                        style = Stroke(width = stroke)
+                    )
+                    drawLine(
+                        color = iconTint,
+                        start = Offset(size.width * 0.34f, top + screenH + stroke * 1.6f),
+                        end = Offset(size.width * 0.66f, top + screenH + stroke * 1.6f),
+                        strokeWidth = stroke
+                    )
+                    drawCircle(
+                        color = iconTint,
+                        radius = stroke * 1.15f,
+                        center = Offset(size.width * 0.5f, top + screenH * 0.5f)
+                    )
+                }
+            }
+
+            PillGlyphKind.VECTOR -> {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = contentDescription,
+                    tint = iconTint,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeviceCategoryGlyph(
+    kind: DeviceIconKind,
+    modifier: Modifier = Modifier,
+    tint: Color = Color.White
+) {
+    Canvas(modifier = modifier.size(28.dp)) {
+        val stroke = size.minDimension * 0.085f
+        when (kind) {
+            DeviceIconKind.HEADPHONES -> {
+                drawArc(
+                    color = tint,
+                    startAngle = 180f,
+                    sweepAngle = 180f,
+                    useCenter = false,
+                    topLeft = Offset(size.width * 0.16f, size.height * 0.14f),
+                    size = Size(size.width * 0.68f, size.height * 0.62f),
+                    style = Stroke(width = stroke)
+                )
+                drawRoundRect(
+                    color = tint,
+                    topLeft = Offset(size.width * 0.12f, size.height * 0.48f),
+                    size = Size(size.width * 0.20f, size.height * 0.34f),
+                    cornerRadius = CornerRadius(stroke * 1.4f, stroke * 1.4f)
+                )
+                drawRoundRect(
+                    color = tint,
+                    topLeft = Offset(size.width * 0.68f, size.height * 0.48f),
+                    size = Size(size.width * 0.20f, size.height * 0.34f),
+                    cornerRadius = CornerRadius(stroke * 1.4f, stroke * 1.4f)
                 )
             }
 
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                items(sortedApps, key = { it.packageName }) { appItem ->
-                    var iconBitmap by remember(appItem.packageName) { mutableStateOf<ImageBitmap?>(null) }
-                    var isFocused by remember { mutableStateOf(false) }
+            DeviceIconKind.CONTROLLER -> {
+                drawRoundRect(
+                    color = tint,
+                    topLeft = Offset(size.width * 0.12f, size.height * 0.28f),
+                    size = Size(size.width * 0.76f, size.height * 0.44f),
+                    cornerRadius = CornerRadius(size.height * 0.22f, size.height * 0.22f),
+                    style = Stroke(width = stroke)
+                )
+                drawLine(
+                    color = tint,
+                    start = Offset(size.width * 0.32f, size.height * 0.42f),
+                    end = Offset(size.width * 0.32f, size.height * 0.58f),
+                    strokeWidth = stroke
+                )
+                drawLine(
+                    color = tint,
+                    start = Offset(size.width * 0.24f, size.height * 0.50f),
+                    end = Offset(size.width * 0.40f, size.height * 0.50f),
+                    strokeWidth = stroke
+                )
+                drawCircle(
+                    color = tint,
+                    radius = stroke * 0.85f,
+                    center = Offset(size.width * 0.68f, size.height * 0.44f)
+                )
+                drawCircle(
+                    color = tint,
+                    radius = stroke * 0.85f,
+                    center = Offset(size.width * 0.74f, size.height * 0.54f)
+                )
+            }
 
-                    LaunchedEffect(appItem.packageName) {
-                        val bmp = viewModel.loadAppIconBitmap(appItem.packageName, listOf(appItem.packageName), 96)
-                            ?: loadAppDrawableFromPackages(context, appItem, listOf(appItem.packageName))
-                                ?.let { drawableToBitmap(it, 96, 96) }
+            DeviceIconKind.DISPLAY -> {
+                val boxW = size.width * 0.80f
+                val boxH = size.height * 0.52f
+                val left = (size.width - boxW) / 2f
+                val top = size.height * 0.16f
+                drawRoundRect(
+                    color = tint,
+                    topLeft = Offset(left, top),
+                    size = Size(boxW, boxH),
+                    cornerRadius = CornerRadius(stroke * 1.2f, stroke * 1.2f),
+                    style = Stroke(width = stroke)
+                )
+                drawLine(
+                    color = tint,
+                    start = Offset(size.width * 0.34f, top + boxH + stroke * 1.8f),
+                    end = Offset(size.width * 0.66f, top + boxH + stroke * 1.8f),
+                    strokeWidth = stroke
+                )
+            }
+
+            DeviceIconKind.SPEAKER -> {
+                drawRoundRect(
+                    color = tint,
+                    topLeft = Offset(size.width * 0.24f, size.height * 0.12f),
+                    size = Size(size.width * 0.52f, size.height * 0.76f),
+                    cornerRadius = CornerRadius(stroke * 1.6f, stroke * 1.6f),
+                    style = Stroke(width = stroke)
+                )
+                drawCircle(
+                    color = tint,
+                    radius = size.width * 0.14f,
+                    center = Offset(size.width * 0.5f, size.height * 0.60f),
+                    style = Stroke(width = stroke)
+                )
+                drawCircle(
+                    color = tint,
+                    radius = size.width * 0.05f,
+                    center = Offset(size.width * 0.5f, size.height * 0.28f)
+                )
+            }
+
+            DeviceIconKind.MOBILE -> {
+                drawRoundRect(
+                    color = tint,
+                    topLeft = Offset(size.width * 0.28f, size.height * 0.12f),
+                    size = Size(size.width * 0.44f, size.height * 0.76f),
+                    cornerRadius = CornerRadius(stroke * 1.5f, stroke * 1.5f),
+                    style = Stroke(width = stroke)
+                )
+                drawCircle(
+                    color = tint,
+                    radius = stroke * 0.75f,
+                    center = Offset(size.width * 0.5f, size.height * 0.78f)
+                )
+            }
+
+            DeviceIconKind.GENERIC -> {
+                drawCircle(
+                    color = tint,
+                    radius = size.minDimension * 0.34f,
+                    style = Stroke(width = stroke)
+                )
+                drawCircle(
+                    color = tint,
+                    radius = stroke * 1.1f
+                )
+            }
+        }
+    }
+}
+
+private fun classifyBluetoothDevice(device: BluetoothDevice, label: String): DeviceIconKind {
+    val nameLower = label.lowercase(Locale.ROOT)
+    if (
+        nameLower.contains("airpods") ||
+        nameLower.contains("earbud") ||
+        nameLower.contains("buds") ||
+        nameLower.contains("headphone") ||
+        nameLower.contains("headset") ||
+        nameLower.contains("wh-1000") ||
+        nameLower.contains("wf-1000") ||
+        nameLower.contains("beats") ||
+        nameLower.contains("bose")
+    ) {
+        return DeviceIconKind.HEADPHONES
+    }
+    if (
+        nameLower.contains("controller") ||
+        nameLower.contains("gamepad") ||
+        nameLower.contains("dualshock") ||
+        nameLower.contains("dualsense") ||
+        nameLower.contains("xbox") ||
+        nameLower.contains("remote")
+    ) {
+        return DeviceIconKind.CONTROLLER
+    }
+    if (
+        nameLower.contains("tv") ||
+        nameLower.contains("bravia") ||
+        nameLower.contains("tcl") ||
+        nameLower.contains("monitor") ||
+        nameLower.contains("display")
+    ) {
+        return DeviceIconKind.DISPLAY
+    }
+    if (
+        nameLower.contains("speaker") ||
+        nameLower.contains("soundbar") ||
+        nameLower.contains("sonos") ||
+        nameLower.contains("jbl")
+    ) {
+        return DeviceIconKind.SPEAKER
+    }
+    if (
+        nameLower.contains("iphone") ||
+        nameLower.contains("galaxy") ||
+        nameLower.contains("pixel") ||
+        nameLower.contains("phone") ||
+        nameLower.contains("ipad") ||
+        nameLower.contains("tab")
+    ) {
+        return DeviceIconKind.MOBILE
+    }
+
+    val majorClass = try {
+        device.bluetoothClass?.majorDeviceClass
+    } catch (_: SecurityException) {
+        null
+    }
+
+    return when (majorClass) {
+        BluetoothClass.Device.Major.AUDIO_VIDEO -> DeviceIconKind.HEADPHONES
+        BluetoothClass.Device.Major.PERIPHERAL -> DeviceIconKind.CONTROLLER
+        BluetoothClass.Device.Major.PHONE -> DeviceIconKind.MOBILE
+        BluetoothClass.Device.Major.COMPUTER -> DeviceIconKind.DISPLAY
+        else -> DeviceIconKind.GENERIC
+    }
+}
+
+@Suppress("MissingPermission")
+private fun findBluetoothDevice(context: Context, address: String?): BluetoothDevice? {
+    if (address.isNullOrBlank()) return null
+    val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+    val adapter = btManager?.adapter ?: return null
+    return try {
+        adapter.bondedDevices?.firstOrNull { it.address.equals(address, ignoreCase = true) }
+            ?: adapter.getRemoteDevice(address)
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun buildTvBluetoothSettingsIntent(
+    context: Context,
+    deviceAddress: String? = null
+): Intent {
+    val pm = context.packageManager
+    val targetDevice: BluetoothDevice? = findBluetoothDevice(context, deviceAddress)
+
+    val candidates = listOf(
+        Intent().setComponent(
+            ComponentName(
+                "com.android.tv.settings",
+                "com.android.tv.settings.connectivity.bluetooth.BluetoothActivity"
+            )
+        ),
+        Intent().setComponent(
+            ComponentName(
+                "com.android.tv.settings",
+                "com.android.tv.settings.bluetooth.BluetoothActivity"
+            )
+        ),
+        Intent().setComponent(
+            ComponentName(
+                "com.android.settings",
+                "com.android.settings.bluetooth.BluetoothSettings"
+            )
+        ),
+        Intent(Settings.ACTION_BLUETOOTH_SETTINGS),
+        Intent().setComponent(
+            ComponentName(
+                "com.android.tv.settings",
+                "com.android.tv.settings.accessories.AddAccessoryActivity"
+            )
+        ),
+        Intent(Settings.ACTION_SETTINGS)
+    )
+
+    for (candidate in candidates) {
+        if (pm.resolveActivity(candidate, PackageManager.MATCH_DEFAULT_ONLY) != null) {
+            if (targetDevice != null) {
+                candidate.putExtra(BluetoothDevice.EXTRA_DEVICE, targetDevice)
+            }
+            return candidate
+        }
+    }
+    return Intent(Settings.ACTION_SETTINGS)
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun BackIconButton(
+    onClick: () -> Unit,
+    useLightSurfaceContent: Boolean = true
+) {
+    var isFocused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (isFocused) 1.15f else 1f,
+        label = "backIconBtnScale"
+    )
+    val inkColor = if (useLightSurfaceContent) LightInkPrimary else Color.White
+
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(CircleShape)
+            .background(
+                if (isFocused) inkColor.copy(alpha = 0.20f)
+                else inkColor.copy(alpha = 0.08f)
+            )
+            .onFocusChanged { isFocused = it.isFocused }
+            .focusable()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+            contentDescription = "Back",
+            tint = inkColor,
+            modifier = Modifier.size(20.dp)
+        )
+    }
+}
+
+@Composable
+private fun AppDrawerIconSkeleton(
+    useLightSurfaceContent: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val transition = rememberInfiniteTransition(label = "drawerIconSkeletonPulse")
+    val alpha by transition.animateFloat(
+        initialValue = 0.10f,
+        targetValue = 0.24f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 750),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "drawerIconSkeletonAlpha"
+    )
+    val baseColor = if (useLightSurfaceContent) LightInkPrimary else Color.White
+
+    Box(
+        modifier = modifier
+            .size(58.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(baseColor.copy(alpha = alpha))
+    )
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+private fun AllAppsDrawerPanel(
+    apps: List<AppInfo>,
+    viewModel: HomeViewModel,
+    context: Context,
+    useLightSurfaceContent: Boolean,
+    firstItemFocusRequester: FocusRequester,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val sortedApps = remember(apps) {
+        apps.sortedBy { it.label.lowercase(Locale.ROOT) }
+    }
+    val primaryTextColor = if (useLightSurfaceContent) LightInkPrimary else Color.White
+    val secondaryTextColor = if (useLightSurfaceContent) LightInkSecondary else Color.White.copy(alpha = 0.82f)
+    val drawerIconShape = RoundedCornerShape(12.dp)
+
+    Column(
+        modifier = modifier
+            .trapDrawerFocus(onClose)
+            .padding(start = 12.dp, end = 24.dp, top = 28.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        TopHeaderWithCenteredTitle(
+            title = "App",
+            useLightSurfaceContent = useLightSurfaceContent,
+            onBack = onClose
+        )
+
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(5),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 6.dp, horizontal = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            itemsIndexed(sortedApps, key = { _, app -> app.packageName }) { index, appItem ->
+                val cacheKey = remember(appItem.packageName) {
+                    "app_${appItem.packageName}"
+                }
+                var iconBitmap by remember(cacheKey) {
+                    mutableStateOf(iconBitmapCache.get(cacheKey)?.asImageBitmap())
+                }
+                var isLoadingIcon by remember(cacheKey) {
+                    mutableStateOf(iconBitmap == null)
+                }
+                var isFocused by remember { mutableStateOf(false) }
+
+                LaunchedEffect(cacheKey) {
+                    if (iconBitmap == null) {
+                        isLoadingIcon = true
+                        val bmp = loadNormalizedAppBitmap(context, viewModel, appItem, listOf(appItem.packageName))
                         if (bmp != null) {
+                            iconBitmapCache.put(cacheKey, bmp)
                             iconBitmap = bmp.asImageBitmap()
                         }
+                        isLoadingIcon = false
+                    } else {
+                        isLoadingIcon = false
                     }
+                }
 
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(
-                                if (isFocused) Color.White.copy(alpha = 0.18f)
-                                else Color.White.copy(alpha = 0.05f)
-                            )
-                            .border(
-                                width = if (isFocused) 1.dp else 0.dp,
-                                color = if (isFocused) Color.White.copy(alpha = 0.5f) else Color.Transparent,
-                                shape = RoundedCornerShape(14.dp)
-                            )
-                            .onFocusChanged { isFocused = it.isFocused }
-                            .focusable()
-                            .clickable {
-                                onClose()
-                                launchAppSafely(context, appItem.launchIntent)
+                val focusScale by animateFloatAsState(
+                    targetValue = if (isFocused) 1.18f else 1f,
+                    label = "gridIconFocusScale"
+                )
+
+                val triggerLaunch = {
+                    Log.d(TAG, "Drawer item activated: label=${appItem.label}, pkg=${appItem.packageName}")
+                    launchDrawerApp(context, appItem, onClose)
+                }
+
+                Column(
+                    modifier = Modifier
+                        .background(Color.Transparent)
+                        .then(
+                            if (index == 0) Modifier.focusRequester(firstItemFocusRequester)
+                            else Modifier
+                        )
+                        .onFocusChanged { isFocused = it.isFocused }
+                        .focusable()
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyUp &&
+                                (keyEvent.key == Key.DirectionCenter || keyEvent.key == Key.Enter)
+                            ) {
+                                triggerLaunch()
+                                true
+                            } else {
+                                false
                             }
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        }
+                        .combinedClickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = triggerLaunch
+                        )
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(74.dp)
+                            .background(Color.Transparent),
+                        contentAlignment = Alignment.Center
                     ) {
                         if (iconBitmap != null) {
                             Image(
@@ -507,36 +1203,57 @@ private fun AllAppsDrawerPanel(
                                 contentDescription = appItem.label,
                                 contentScale = ContentScale.Fit,
                                 modifier = Modifier
-                                    .size(34.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = 0.08f))
-                                    .padding(3.dp)
+                                    .size(58.dp)
+                                    .graphicsLayer {
+                                        scaleX = focusScale
+                                        scaleY = focusScale
+                                    }
+                                    .clip(drawerIconShape)
+                            )
+                        } else if (isLoadingIcon) {
+                            AppDrawerIconSkeleton(
+                                useLightSurfaceContent = useLightSurfaceContent,
+                                modifier = Modifier.graphicsLayer {
+                                    scaleX = focusScale
+                                    scaleY = focusScale
+                                }
                             )
                         } else {
                             Box(
                                 modifier = Modifier
-                                    .size(34.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = 0.12f)),
+                                    .size(58.dp)
+                                    .graphicsLayer {
+                                        scaleX = focusScale
+                                        scaleY = focusScale
+                                    }
+                                    .clip(drawerIconShape),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Filled.PlayArrow,
                                     contentDescription = appItem.label,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(18.dp)
+                                    tint = primaryTextColor.copy(alpha = 0.85f),
+                                    modifier = Modifier.size(32.dp)
                                 )
                             }
                         }
+                    }
 
+                    Box(
+                        modifier = Modifier.height(20.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Text(
                             text = appItem.label,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = Color.White,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
+                            textAlign = TextAlign.Center,
+                            fontSize = 12.sp,
+                            fontWeight = if (isFocused) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (isFocused) primaryTextColor else secondaryTextColor,
+                            modifier = Modifier
+                                .background(Color.Transparent)
+                                .padding(horizontal = 4.dp)
                         )
                     }
                 }
@@ -545,9 +1262,98 @@ private fun AllAppsDrawerPanel(
     }
 }
 
+private fun launchDrawerApp(context: Context, appItem: AppInfo, onClose: () -> Unit) {
+    val pkg = appItem.packageName.takeIf { it.isNotBlank() && !it.startsWith("slot.placeholder.") }
+    val candidates = buildList {
+        if (pkg != null) {
+            context.packageManager.getLeanbackLaunchIntentForPackage(pkg)?.let { add(it) }
+            context.packageManager.getLaunchIntentForPackage(pkg)?.let { add(it) }
+        }
+        add(Intent(appItem.launchIntent))
+        if (pkg != null) {
+            add(
+                Intent(Intent.ACTION_MAIN)
+                    .addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
+                    .setPackage(pkg)
+            )
+            add(
+                Intent(Intent.ACTION_MAIN)
+                    .addCategory(Intent.CATEGORY_LAUNCHER)
+                    .setPackage(pkg)
+            )
+        }
+    }
+
+    for (candidate in candidates) {
+        try {
+            val intent = Intent(candidate).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+            }
+            context.startActivity(intent)
+            onClose()
+            return
+        } catch (e: Exception) {
+            Log.w(TAG, "Launch candidate failed for pkg=$pkg action=${candidate.action}", e)
+        }
+    }
+
+    Log.e(TAG, "All launch attempts failed for drawer app: label=${appItem.label}, pkg=${appItem.packageName}")
+}
+
+private suspend fun loadNormalizedAppBitmap(
+    context: Context,
+    viewModel: HomeViewModel,
+    appItem: AppInfo,
+    candidatePackages: List<String>
+): Bitmap? {
+    val cacheKey = "${appItem.packageName}|${candidatePackages.joinToString(",")}"
+    iconBitmapCache.get(cacheKey)?.let { return it }
+
+    val directDrawable = loadAppDrawableFromPackages(context, appItem, candidatePackages)
+    val rawBitmap = if (directDrawable != null) {
+        drawableToBitmap(directDrawable, 160, 160)
+    } else {
+        viewModel.loadAppIconBitmap(appItem.packageName, candidatePackages, 160)
+    }
+
+    val normalized = normalizeSquareBitmap(rawBitmap, 160)
+    if (normalized != null) {
+        iconBitmapCache.put(cacheKey, normalized)
+    }
+    return normalized
+}
+
+private fun normalizeSquareBitmap(source: Bitmap?, targetSize: Int = 160): Bitmap? {
+    if (source == null || source.width <= 0 || source.height <= 0) return source
+    return try {
+        if (source.width == targetSize && source.height == targetSize && source.config == Bitmap.Config.ARGB_8888) {
+            source
+        } else {
+            val out = Bitmap.createBitmap(targetSize, targetSize, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(out)
+            val scale = min(targetSize.toFloat() / source.width, targetSize.toFloat() / source.height)
+            val drawW = (source.width * scale).toInt().coerceAtLeast(1)
+            val drawH = (source.height * scale).toInt().coerceAtLeast(1)
+            val left = (targetSize - drawW) / 2
+            val top = (targetSize - drawH) / 2
+            val scaled = Bitmap.createScaledBitmap(source, drawW, drawH, true)
+            canvas.drawBitmap(scaled, left.toFloat(), top.toFloat(), null)
+            if (scaled !== source) {
+                scaled.recycle()
+            }
+            out
+        }
+    } catch (_: Exception) {
+        source
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun ConnectedDevicesDrawerPanel(
     context: Context,
+    useLightSurfaceContent: Boolean,
+    firstItemFocusRequester: FocusRequester,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -556,151 +1362,200 @@ private fun ConnectedDevicesDrawerPanel(
         queryConnectedDevices(context)
     }
 
-    Surface(
+    val openDeviceManagement = {
+        val intent = buildTvBluetoothSettingsIntent(context)
+        onClose()
+        launchAppSafely(context, intent)
+    }
+
+    val primaryTextColor = if (useLightSurfaceContent) LightInkPrimary else Color.White
+    val secondaryTextColor = if (useLightSurfaceContent) LightInkSecondary else Color.White.copy(alpha = 0.8f)
+    val cardBgColor = if (useLightSurfaceContent) Color.White else Color.White.copy(alpha = 0.08f)
+    val focusedBgColor = if (useLightSurfaceContent) LightInkPrimary else Color.White
+    val focusedTextColor = if (useLightSurfaceContent) Color.White else LightInkPrimary
+
+    Column(
         modifier = modifier
-            .widthIn(min = 320.dp, max = 440.dp)
-            .fillMaxHeight(),
-        shape = RoundedCornerShape(24.dp),
-        color = Color(0xCC141820),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
-        shadowElevation = 16.dp
+            .trapDrawerFocus(onClose)
+            .padding(start = 12.dp, end = 24.dp, top = 28.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Column(
+        TopHeaderWithCenteredTitle(
+            title = "Connected Devices",
+            useLightSurfaceContent = useLightSurfaceContent,
+            onBack = onClose
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            DrawerActionChip(
+                icon = Icons.Filled.Refresh,
+                label = "Refresh",
+                useLightSurfaceContent = useLightSurfaceContent,
+                onClick = { refreshKey++ }
+            )
+        }
+
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
             modifier = Modifier
-                .fillMaxSize()
-                .padding(18.dp),
+                .fillMaxWidth()
+                .weight(1f),
+            contentPadding = PaddingValues(vertical = 4.dp, horizontal = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Connected Devices",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color.White
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    DrawerActionChip(
-                        icon = Icons.Filled.Refresh,
-                        label = "Refresh",
-                        onClick = { refreshKey++ }
+            itemsIndexed(devices) { index, device ->
+                var isFocused by remember { mutableStateOf(false) }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            if (index == 0) Modifier.focusRequester(firstItemFocusRequester)
+                            else Modifier
+                        )
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(
+                            if (isFocused) primaryTextColor.copy(alpha = 0.12f)
+                            else cardBgColor
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = if (isFocused) primaryTextColor.copy(alpha = 0.45f)
+                            else primaryTextColor.copy(alpha = 0.14f),
+                            shape = RoundedCornerShape(16.dp)
+                        )
+                        .onFocusChanged { isFocused = it.isFocused }
+                        .focusable()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = {}
+                        )
+                        .padding(horizontal = 12.dp, vertical = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(primaryTextColor.copy(alpha = 0.08f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        DeviceCategoryGlyph(
+                            kind = device.iconKind,
+                            tint = primaryTextColor
+                        )
+                    }
+
+                    Text(
+                        text = device.name,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = primaryTextColor,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    DrawerActionChip(
-                        icon = Icons.Filled.Close,
-                        label = "Close",
-                        onClick = onClose
+                    Text(
+                        text = device.subtitle,
+                        fontSize = 11.sp,
+                        color = secondaryTextColor,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
+        }
 
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(devices) { device ->
-                    var isFocused by remember { mutableStateOf(false) }
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            var isAddFocused by remember { mutableStateOf(false) }
+            val addScale by animateFloatAsState(
+                targetValue = if (isAddFocused) 1.06f else 1f,
+                label = "addMoreBtnScale"
+            )
 
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(
-                                if (isFocused) Color.White.copy(alpha = 0.18f)
-                                else Color.White.copy(alpha = 0.06f)
-                            )
-                            .border(
-                                width = if (isFocused) 1.dp else 0.dp,
-                                color = if (isFocused) Color.White.copy(alpha = 0.5f) else Color.Transparent,
-                                shape = RoundedCornerShape(14.dp)
-                            )
-                            .onFocusChanged { isFocused = it.isFocused }
-                            .focusable()
-                            .clickable(enabled = device.actionIntent != null) {
-                                device.actionIntent?.let { intent ->
-                                    onClose()
-                                    launchAppSafely(context, intent)
-                                }
-                            }
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.12f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = device.icon,
-                                contentDescription = device.name,
-                                tint = Color.White,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = device.name,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color.White,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = device.subtitle,
-                                fontSize = 12.sp,
-                                color = Color.White.copy(alpha = 0.72f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+            Box(
+                modifier = Modifier
+                    .graphicsLayer {
+                        scaleX = addScale
+                        scaleY = addScale
                     }
-                }
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(if (isAddFocused) focusedBgColor else cardBgColor)
+                    .border(
+                        width = 1.dp,
+                        color = if (isAddFocused) focusedBgColor else primaryTextColor.copy(alpha = 0.22f),
+                        shape = RoundedCornerShape(999.dp)
+                    )
+                    .onFocusChanged { isAddFocused = it.isFocused }
+                    .focusable()
+                    .clickable(onClick = openDeviceManagement)
+                    .padding(horizontal = 24.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Add More",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (isAddFocused) focusedTextColor else primaryTextColor
+                )
             }
         }
     }
 }
 
+@OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 private fun DrawerActionChip(
     icon: ImageVector,
     label: String,
+    useLightSurfaceContent: Boolean,
     onClick: () -> Unit
 ) {
     var isFocused by remember { mutableStateOf(false) }
+    val primaryTextColor = if (useLightSurfaceContent) LightInkPrimary else Color.White
+    val chipBgColor = if (useLightSurfaceContent) Color.White else Color.White.copy(alpha = 0.08f)
 
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
             .background(
-                if (isFocused) Color.White.copy(alpha = 0.24f)
-                else Color.White.copy(alpha = 0.10f)
+                if (isFocused) primaryTextColor.copy(alpha = 0.16f)
+                else chipBgColor
+            )
+            .border(
+                width = 1.dp,
+                color = primaryTextColor.copy(alpha = 0.16f),
+                shape = RoundedCornerShape(999.dp)
             )
             .onFocusChanged { isFocused = it.isFocused }
             .focusable()
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         Icon(
             imageVector = icon,
             contentDescription = label,
-            tint = Color.White,
+            tint = primaryTextColor,
             modifier = Modifier.size(15.dp)
         )
         Text(
             text = label,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
-            color = Color.White
+            color = primaryTextColor
         )
     }
 }
@@ -709,99 +1564,109 @@ private fun DrawerActionChip(
 private fun queryConnectedDevices(context: Context): List<ConnectedDeviceItem> {
     val items = mutableListOf<ConnectedDeviceItem>()
 
-    try {
-        val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-        val adapter: BluetoothAdapter? = btManager?.adapter
-        if (adapter == null) {
-            items.add(
-                ConnectedDeviceItem(
-                    name = "Bluetooth",
-                    subtitle = "Unavailable on this TV build",
-                    icon = Icons.Filled.AccountCircle,
-                    actionIntent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
-                )
-            )
-        } else {
-            val stateLabel = if (adapter.isEnabled) "Bluetooth On" else "Bluetooth Off"
-            val canReadBonded = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
-                    PackageManager.PERMISSION_GRANTED
-            } else {
-                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH) ==
-                    PackageManager.PERMISSION_GRANTED
-            }
+    val canReadBluetooth = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
+            PackageManager.PERMISSION_GRANTED
+    } else {
+        ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH) ==
+            PackageManager.PERMISSION_GRANTED
+    }
 
-            if (canReadBonded) {
-                val bonded = try {
-                    adapter.bondedDevices?.toList().orEmpty()
-                } catch (_: SecurityException) {
-                    emptyList()
-                }
-                if (bonded.isEmpty()) {
-                    items.add(
-                        ConnectedDeviceItem(
-                            name = "Bluetooth ($stateLabel)",
-                            subtitle = "No paired remotes, headphones, or laptops listed",
-                            icon = Icons.Filled.AccountCircle,
-                            actionIntent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
-                        )
-                    )
-                } else {
-                    bonded.forEach { dev ->
-                        val devName = try {
-                            dev.name ?: dev.address
-                        } catch (_: SecurityException) {
-                            dev.address
-                        }
-                        items.add(
-                            ConnectedDeviceItem(
-                                name = devName,
-                                subtitle = "Paired Bluetooth • ${dev.address}",
-                                icon = Icons.Filled.AccountCircle,
-                                actionIntent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
-                            )
-                        )
-                    }
-                }
-            } else {
-                items.add(
-                    ConnectedDeviceItem(
-                        name = "Bluetooth ($stateLabel)",
-                        subtitle = "Tap to open Bluetooth & paired devices",
-                        icon = Icons.Filled.AccountCircle,
-                        actionIntent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
-                    )
-                )
-            }
-        }
-    } catch (_: Exception) {
-        items.add(
+    if (!canReadBluetooth) {
+        return listOf(
             ConnectedDeviceItem(
-                name = "Bluetooth Settings",
-                subtitle = "Open system Bluetooth controls",
-                icon = Icons.Filled.AccountCircle,
-                actionIntent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                name = "Bluetooth permission required",
+                subtitle = "Grant BLUETOOTH_CONNECT to detect real connected devices",
+                iconKind = DeviceIconKind.GENERIC
             )
         )
     }
 
-    items.add(
-        ConnectedDeviceItem(
-            name = "Cast / Screencast / Remotes",
-            subtitle = "Open TV input & connected device settings",
-            icon = Icons.Filled.Settings,
-            actionIntent = Intent(Settings.ACTION_CAST_SETTINGS)
+    val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+    val adapter: BluetoothAdapter? = btManager?.adapter
+    if (adapter == null || !adapter.isEnabled) {
+        return listOf(
+            ConnectedDeviceItem(
+                name = "No active devices connected",
+                subtitle = if (adapter == null) "Bluetooth adapter unavailable" else "Bluetooth is turned off",
+                iconKind = DeviceIconKind.GENERIC
+            )
         )
-    )
+    }
 
-    items.add(
-        ConnectedDeviceItem(
-            name = "Display & Input Settings",
-            subtitle = "HDMI / display / system preferences",
-            icon = Icons.Filled.Settings,
-            actionIntent = Intent(Settings.ACTION_SETTINGS)
+    val connectedAddresses = mutableSetOf<String>()
+    val profilesToCheck = listOf(BluetoothProfile.HEADSET, BluetoothProfile.A2DP)
+    for (profile in profilesToCheck) {
+        try {
+            val connectedDevices: List<BluetoothDevice>? = btManager.getConnectedDevices(profile)
+            connectedDevices?.forEach { dev ->
+                val addr = dev.address.orEmpty()
+                if (addr.isNotBlank() && connectedAddresses.add(addr)) {
+                    val label = try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            dev.alias ?: dev.name
+                        } else {
+                            dev.name
+                        }?.takeIf { it.isNotBlank() } ?: addr
+                    } catch (_: SecurityException) {
+                        addr
+                    }
+                    items.add(
+                        ConnectedDeviceItem(
+                            name = label,
+                            subtitle = "Connected • $addr",
+                            address = addr,
+                            isConnected = true,
+                            iconKind = classifyBluetoothDevice(dev, label)
+                        )
+                    )
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    try {
+        adapter.bondedDevices?.forEach { dev ->
+            val addr = dev.address.orEmpty()
+            val isConnected = try {
+                dev.bondState == BluetoothDevice.BOND_BONDED && addr in connectedAddresses
+            } catch (_: SecurityException) {
+                false
+            }
+            if (!isConnected && addr.isNotBlank() && connectedAddresses.add(addr)) {
+                val label = try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        dev.alias ?: dev.name
+                    } else {
+                        dev.name
+                    }?.takeIf { it.isNotBlank() } ?: addr
+                } catch (_: SecurityException) {
+                    addr
+                }
+                items.add(
+                    ConnectedDeviceItem(
+                        name = label,
+                        subtitle = "Paired • $addr",
+                        address = addr,
+                        isConnected = false,
+                        iconKind = classifyBluetoothDevice(dev, label)
+                    )
+                )
+            }
+        }
+    } catch (_: SecurityException) {
+    }
+
+    if (items.isEmpty()) {
+        items.add(
+            ConnectedDeviceItem(
+                name = "No connected or paired devices",
+                subtitle = "No real devices are currently connected to this TV",
+                iconKind = DeviceIconKind.GENERIC
+            )
         )
-    )
+    }
 
     return items
 }
@@ -1017,25 +1882,82 @@ private fun CenteredSixAppRow(
     viewModel: HomeViewModel,
     favorites: Set<String>,
     context: Context,
-    firstItemFocusRequester: FocusRequester? = null
+    currentDay: String,
+    currentDate: String,
+    currentTime: String,
+    useLightSurfaceContent: Boolean,
+    firstItemFocusRequester: FocusRequester? = null,
+    enabled: Boolean = true
 ) {
-    Row(
+    val primaryTextColor = if (useLightSurfaceContent) LightInkPrimary else Color.White
+    val secondaryTextColor = if (useLightSurfaceContent) LightInkSecondary else Color.White.copy(alpha = 0.85f)
+    val dayDateFontSize = 25.sp
+    val dayDateFontWeight = FontWeight.Medium
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 24.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(start = 12.dp, end = 24.dp, top = 16.dp),
+        horizontalAlignment = Alignment.Start,
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        slots.forEachIndexed { index, slot ->
-            AppCircleTile(
-                app = slot.appInfo,
-                candidatePackages = slot.candidatePackages,
-                defaultIcon = slot.defaultIcon,
-                viewModel = viewModel,
-                isFavorite = favorites.contains(slot.appInfo.packageName),
-                context = context,
-                focusRequester = if (index == 0) firstItemFocusRequester else null
+        Column(
+            modifier = Modifier.padding(start = 4.dp, bottom = 6.dp),
+            horizontalAlignment = Alignment.Start,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = currentDay,
+                    fontSize = dayDateFontSize,
+                    fontWeight = dayDateFontWeight,
+                    color = secondaryTextColor
+                )
+                Text(
+                    text = currentDate,
+                    fontSize = dayDateFontSize,
+                    fontWeight = dayDateFontWeight,
+                    color = secondaryTextColor
+                )
+            }
+            Text(
+                text = currentTime,
+                fontSize = 68.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = primaryTextColor
             )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = "Quick Apps",
+            fontSize = 18.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = primaryTextColor.copy(alpha = 0.9f),
+            modifier = Modifier.padding(start = 4.dp)
+        )
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.Start),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            slots.forEachIndexed { index, slot ->
+                AppCircleTile(
+                    app = slot.appInfo,
+                    candidatePackages = slot.candidatePackages,
+                    defaultIcon = slot.defaultIcon,
+                    viewModel = viewModel,
+                    isFavorite = favorites.contains(slot.appInfo.packageName),
+                    useLightSurfaceContent = useLightSurfaceContent,
+                    context = context,
+                    focusRequester = if (index == 0) firstItemFocusRequester else null,
+                    enabled = enabled
+                )
+            }
         }
     }
 }
@@ -1048,37 +1970,38 @@ fun AppCircleTile(
     defaultIcon: ImageVector,
     viewModel: HomeViewModel,
     isFavorite: Boolean,
+    useLightSurfaceContent: Boolean = true,
     context: Context,
-    focusRequester: FocusRequester? = null
+    focusRequester: FocusRequester? = null,
+    enabled: Boolean = true
 ) {
-    var iconBitmap by remember(app.packageName, candidatePackages) { mutableStateOf<ImageBitmap?>(null) }
+    val cacheKey = remember(app.packageName, candidatePackages) {
+        "${app.packageName}|${candidatePackages.joinToString(",")}"
+    }
+    var iconBitmap by remember(cacheKey) {
+        mutableStateOf(iconBitmapCache.get(cacheKey)?.asImageBitmap())
+    }
     var isFocused by remember { mutableStateOf(false) }
     val interactionSource = remember { MutableInteractionSource() }
+    val quickIconShape = RoundedCornerShape(14.dp)
 
-    LaunchedEffect(app.packageName, candidatePackages) {
-        val directDrawable = loadAppDrawableFromPackages(context, app, candidatePackages)
-        val directBitmap = directDrawable?.let { drawableToBitmap(it, 160, 160) }
-        val vmBitmap = if (directBitmap == null) {
-            viewModel.loadAppIconBitmap(app.packageName, candidatePackages, 160)
-        } else null
-
-        val finalBitmap = directBitmap ?: vmBitmap
-        if (finalBitmap != null) {
-            iconBitmap = finalBitmap.asImageBitmap()
-        } else {
-            Log.d(TAG, "No bitmap for label=${app.label}, pkg=${app.packageName}, candidates=$candidatePackages")
+    LaunchedEffect(cacheKey) {
+        if (iconBitmap == null) {
+            val bmp = loadNormalizedAppBitmap(context, viewModel, app, candidatePackages)
+            if (bmp != null) {
+                iconBitmap = bmp.asImageBitmap()
+            } else {
+                Log.d(TAG, "No bitmap for label=${app.label}, pkg=${app.packageName}, candidates=$candidatePackages")
+            }
         }
     }
 
-    val baseIconSize = 62.dp
-    val focusedIconSize by animateDpAsState(
-        targetValue = if (isFocused) 74.dp else baseIconSize,
-        label = "iconSize"
+    val focusScale by animateFloatAsState(
+        targetValue = if (isFocused) 1.18f else 1f,
+        label = "quickAppIconFocusScale"
     )
-    val shadowElevation by animateDpAsState(
-        targetValue = if (isFocused) 12.dp else 2.dp,
-        label = "shadowElevation"
-    )
+    val primaryTextColor = if (useLightSurfaceContent) LightInkPrimary else Color.White
+    val secondaryTextColor = if (useLightSurfaceContent) LightInkSecondary else Color.White.copy(alpha = 0.82f)
 
     Column(
         modifier = Modifier
@@ -1088,14 +2011,11 @@ fun AppCircleTile(
             )
             .onFocusChanged { isFocused = it.isFocused }
             .combinedClickable(
+                enabled = enabled,
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = {
-                    if (!app.packageName.startsWith("slot.placeholder.")) {
-                        launchAppSafely(context, app.launchIntent)
-                    } else {
-                        launchAppSafely(context, app.launchIntent)
-                    }
+                    launchAppSafely(context, app.launchIntent)
                 },
                 onLongClick = {
                     if (!app.packageName.startsWith("slot.placeholder.")) {
@@ -1114,50 +2034,34 @@ fun AppCircleTile(
             contentAlignment = Alignment.Center
         ) {
             if (iconBitmap != null) {
-                Box(
+                Image(
+                    bitmap = iconBitmap!!,
+                    contentDescription = app.label,
+                    contentScale = ContentScale.Fit,
                     modifier = Modifier
-                        .size(focusedIconSize)
-                        .shadow(
-                            elevation = shadowElevation,
-                            shape = CircleShape,
-                            clip = false,
-                            ambientColor = Color.Black,
-                            spotColor = Color.Black
-                        )
-                        .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.08f))
-                        .padding(6.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Image(
-                        bitmap = iconBitmap!!,
-                        contentDescription = app.label,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(CircleShape)
-                    )
-                }
+                        .size(62.dp)
+                        .graphicsLayer {
+                            scaleX = focusScale
+                            scaleY = focusScale
+                        }
+                        .clip(quickIconShape)
+                )
             } else {
                 Box(
                     modifier = Modifier
-                        .size(focusedIconSize)
-                        .shadow(
-                            elevation = shadowElevation,
-                            shape = CircleShape,
-                            clip = false,
-                            ambientColor = Color.Black,
-                            spotColor = Color.Black
-                        )
-                        .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.12f)),
+                        .size(62.dp)
+                        .graphicsLayer {
+                            scaleX = focusScale
+                            scaleY = focusScale
+                        }
+                        .clip(quickIconShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = defaultIcon,
                         contentDescription = app.label,
-                        tint = Color.White.copy(alpha = 0.85f),
-                        modifier = Modifier.size(28.dp)
+                        tint = primaryTextColor.copy(alpha = 0.85f),
+                        modifier = Modifier.size(32.dp)
                     )
                 }
             }
@@ -1175,81 +2079,18 @@ fun AppCircleTile(
             modifier = Modifier.height(18.dp),
             contentAlignment = Alignment.Center
         ) {
-            if (isFocused) {
-                Text(
-                    text = app.label,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.Center,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color.White,
-                    modifier = Modifier
-                        .background(Color.Transparent)
-                        .padding(horizontal = 2.dp)
-                )
-            } else {
-                Spacer(modifier = Modifier.height(1.dp))
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalTvMaterial3Api::class)
-@Composable
-fun PanelFooter(
-    currentTime: String
-) {
-    val userName = "User"
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(56.dp)
-            .background(Color.Transparent)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Transparent)
-                .padding(horizontal = 24.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
             Text(
-                text = currentTime,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium,
-                color = Color.White,
-                modifier = Modifier.background(Color.Transparent)
+                text = app.label,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                fontSize = 12.sp,
+                fontWeight = if (isFocused) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (isFocused) primaryTextColor else secondaryTextColor,
+                modifier = Modifier
+                    .background(Color.Transparent)
+                    .padding(horizontal = 2.dp)
             )
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.background(Color.Transparent)
-            ) {
-                Text(
-                    text = userName,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Color.White,
-                    modifier = Modifier.background(Color.Transparent)
-                )
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .background(Color.White.copy(alpha = 0.14f), CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.AccountCircle,
-                        contentDescription = "Profile",
-                        tint = Color.White.copy(alpha = 0.9f),
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
         }
     }
 }
@@ -1278,6 +2119,10 @@ fun formatTime(): String {
     return SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date())
 }
 
+fun formatDayName(): String {
+    return SimpleDateFormat("EEEE", Locale.getDefault()).format(Date())
+}
+
 fun formatDate(): String {
-    return SimpleDateFormat("EEE, MMM d", Locale.getDefault()).format(Date())
+    return SimpleDateFormat("MMM d", Locale.getDefault()).format(Date())
 }

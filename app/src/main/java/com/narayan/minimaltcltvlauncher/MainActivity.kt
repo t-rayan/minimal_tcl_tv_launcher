@@ -1,6 +1,8 @@
 package com.narayan.minimaltcltvlauncher
 
 import android.os.Bundle
+import android.os.SystemClock
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,18 +19,22 @@ import com.narayan.minimaltcltvlauncher.viewmodel.HomeViewModel
 class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalTvMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
+        val startTime = SystemClock.elapsedRealtime()
+        Log.d("StartupTiming", "MainActivity.onCreate entry: ${SystemClock.elapsedRealtime() - startTime}ms")
         super.onCreate(savedInstanceState)
+        Log.d("StartupTiming", "After super.onCreate: ${SystemClock.elapsedRealtime() - startTime}ms")
         setContent {
+            Log.d("StartupTiming", "setContent start: ${SystemClock.elapsedRealtime() - startTime}ms")
             MinimalTCLTVLauncherTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     shape = RectangleShape
                 ) {
-                    // Use viewModel() to get/create HomeViewModel scoped to this Activity
-                    val factory = remember { HomeViewModel.Factory(application) }
-                    HomeScreen(viewModel = viewModel(factory = factory))
+                    Log.d("StartupTiming", "HomeScreen composition start: ${SystemClock.elapsedRealtime() - startTime}ms")
+                    HomeScreen()
                 }
             }
+            Log.d("StartupTiming", "setContent end: ${SystemClock.elapsedRealtime() - startTime}ms")
         }
     }
 }

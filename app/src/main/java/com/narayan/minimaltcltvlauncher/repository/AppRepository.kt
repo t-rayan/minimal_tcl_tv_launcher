@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
+import android.os.SystemClock
+import android.util.Log
 import com.narayan.minimaltcltvlauncher.model.AppInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.flow
@@ -61,6 +63,7 @@ class AppRepository(private val context: Context) {
      * 4. Convert each ResolveInfo to AppInfo with launch intent
      */
     private fun queryApps(): List<AppInfo> {
+        val startTime = SystemClock.elapsedRealtime()
         val pm = context.packageManager
 
         // Intent for TV apps (CATEGORY_LEANBACK_LAUNCHER)
@@ -73,9 +76,14 @@ class AppRepository(private val context: Context) {
             addCategory(Intent.CATEGORY_LAUNCHER)
         }
 
-        // Query both categories
-        val leanbackApps = pm.queryIntentActivities(leanbackIntent, PackageManager.MATCH_ALL)
-        val launcherApps = pm.queryIntentActivities(launcherIntent, PackageManager.MATCH_ALL)
+        // Query both categories - use GET_META_DATA | GET_SHARED_LIBRARY_FILES for more complete results
+        val flags = PackageManager.MATCH_ALL
+        val leanbackStart = SystemClock.elapsedRealtime()
+        val leanbackApps = pm.queryIntentActivities(leanbackIntent, flags)
+        Log.d("StartupTiming", "LEANBACK query: ${SystemClock.elapsedRealtime() - leanbackStart}ms (${leanbackApps.size} results)")
+        val launcherStart = SystemClock.elapsedRealtime()
+        val launcherApps = pm.queryIntentActivities(launcherIntent, flags)
+        Log.d("StartupTiming", "LAUNCHER query: ${SystemClock.elapsedRealtime() - launcherStart}ms (${launcherApps.size} results)")
 
         // Merge and deduplicate by packageName (some apps declare both)
         val seenPackages = mutableSetOf<String>()
@@ -93,11 +101,19 @@ class AppRepository(private val context: Context) {
 
         addIfNew(leanbackApps)
         addIfNew(launcherApps)
+        Log.d("StartupTiming", "Merged ${merged.size} unique apps")
 
-        // Convert to AppInfo list
-        return merged.mapNotNull { resolveInfo ->
+        // Convert to AppInfo list - use applicationInfo.loadLabel for better performance
+        val convertStart = SystemClock.elapsedRealtime()
+        val result = merged.mapNotNull { resolveInfo ->
             val pkg = resolveInfo.activityInfo.packageName
-            val label = resolveInfo.loadLabel(pm).toString()
+            // Use applicationInfo.loadLabel which is faster than resolveInfo.loadLabel
+            val appInfo = try {
+                pm.getApplicationInfo(pkg, 0)
+            } catch (e: PackageManager.NameNotFoundException) {
+                return@mapNotNull null
+            }
+            val label = appInfo.loadLabel(pm).toString()
 
             // Get a ready-to-use launch intent for this package
             val launchIntent = pm.getLaunchIntentForPackage(pkg) ?: return@mapNotNull null
@@ -108,5 +124,8 @@ class AppRepository(private val context: Context) {
                 launchIntent = launchIntent
             )
         }
+        Log.d("StartupTiming", "AppInfo conversion: ${SystemClock.elapsedRealtime() - convertStart}ms (${result.size} apps)")
+        Log.d("StartupTiming", "TOTAL queryApps: ${SystemClock.elapsedRealtime() - startTime}ms")
+        return result
     }
 }

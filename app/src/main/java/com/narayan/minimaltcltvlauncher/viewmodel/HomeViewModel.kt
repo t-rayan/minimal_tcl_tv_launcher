@@ -6,6 +6,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.os.SystemClock
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -22,6 +24,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.max
 import kotlin.math.min
+import android.util.LruCache
 
 /**
  * ViewModel that holds the list of discovered apps.
@@ -31,6 +34,17 @@ import kotlin.math.min
 class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = AppRepository(application)
+
+    // Icon cache - stores normalized 160x160 bitmaps keyed by package name
+    private val iconCache = object : LruCache<String, Bitmap>(32) {
+        override fun sizeOf(key: String, value: Bitmap): Int {
+            return value.byteCount / 1024 // size in KB
+        }
+    }
+
+    // Loading state for initial app load
+    private val _isLoading = MutableStateFlow(true)
+    val isLoading: StateFlow<Boolean> = _isLoading
 
     // MutableStateFlow: thread-safe, holds the latest value, notifies collectors on change
     private val _apps = MutableStateFlow<List<AppInfo>>(emptyList())
@@ -51,11 +65,18 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
      * Repository query runs on Dispatchers.IO; result posted to _apps on main thread.
      */
     private fun loadApps() {
+        val startTime = SystemClock.elapsedRealtime()
+        Log.d("StartupTiming", "loadApps start: ${SystemClock.elapsedRealtime() - startTime}ms")
         viewModelScope.launch {
             repository.getApps()
                 // Collect each emission (there's only one) and update state
                 .onEach { appList ->
+                    val loadTime = SystemClock.elapsedRealtime()
+                    Log.d("StartupTiming", "Apps loaded (${appList.size} apps): ${loadTime - startTime}ms")
                     _apps.value = appList
+                    _isLoading.value = false
+                    // Warm icon cache for all discovered apps in background
+                    preloadIcons(appList.map { it.packageName })
                 }
                 .collect() // terminal operator; keeps coroutine alive until flow completes
         }
@@ -262,6 +283,49 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         } catch (_: Exception) {
             null
         }
+    }
+
+    /**
+     * Gets a cached icon bitmap, or loads and caches it if not present.
+     * Runs on IO thread to avoid blocking the main thread.
+     */
+    suspend fun getIconBitmap(packageName: String, candidatePackages: List<String> = emptyList(), targetSize: Int = 160): Bitmap? {
+        val cacheKey = packageName
+        
+        // Check cache first (on main thread, but LruCache is thread-safe for reads)
+        val cached = iconCache.get(cacheKey)
+        if (cached != null) return cached
+        
+        // Load on IO thread
+        val bitmap = withContext(Dispatchers.IO) {
+            loadAppIconBitmap(packageName, candidatePackages, 160)
+        }
+        
+        // Cache the result
+        bitmap?.let { iconCache.put(cacheKey, it) }
+        return bitmap
+    }
+
+    /**
+     * Preloads icons for a list of packages in background.
+     * Useful for warming the cache during idle time.
+     */
+    fun preloadIcons(packages: List<String>) {
+        viewModelScope.launch {
+            packages.forEach { pkg ->
+                if (iconCache.get(pkg) == null) {
+                    val bitmap = loadAppIconBitmap(pkg, emptyList(), 160)
+                    bitmap?.let { iconCache.put(pkg, it) }
+                }
+            }
+        }
+    }
+
+    /**
+     * Clears the icon cache.
+     */
+    fun clearIconCache() {
+        iconCache.evictAll()
     }
 
     /**
