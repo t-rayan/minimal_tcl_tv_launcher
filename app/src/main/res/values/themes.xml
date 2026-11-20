@@ -1,0 +1,4 @@
+<resources>
+
+    <style name="Theme.MinimalTCLTVLauncher" parent="Theme.AppCompat.DayNight.NoActionBar" />
+</resources>
