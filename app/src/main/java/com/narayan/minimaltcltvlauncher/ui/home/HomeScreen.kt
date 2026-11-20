@@ -314,6 +314,13 @@ fun HomeScreen(
                         firstItemFocusRequester = centerRowFocusRequester,
                         enabled = true
                     )
+
+                    TopRightThemeToggleButton(
+                        isDarkTheme = isDarkTheme,
+                        useLightSurfaceContent = useLightSurfaceContent,
+                        onToggleTheme = { isDarkTheme = !isDarkTheme },
+                        modifier = Modifier.align(Alignment.TopEnd)
+                    )
                 }
 
                 ActiveView.ALL_APPS -> {
@@ -372,12 +379,7 @@ fun HomeScreen(
                     }
                 },
                 onSettingsClick = {
-                    if (activeView == ActiveView.SETTINGS) {
-                        returnToHome()
-                    } else {
-                        activeMenu = LeftMenuItem.SETTINGS
-                        activeView = ActiveView.SETTINGS
-                    }
+                    launchSystemSettings(context)
                 },
                 onAllAppsClick = {
                     if (activeView == ActiveView.ALL_APPS) {
@@ -397,6 +399,55 @@ fun HomeScreen(
                 }
             )
         }
+    }
+}
+
+@Composable
+private fun TopRightThemeToggleButton(
+    isDarkTheme: Boolean,
+    useLightSurfaceContent: Boolean,
+    onToggleTheme: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var isFocused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (isFocused) 1.06f else 1f,
+        label = "topRightThemeToggleScale"
+    )
+    val primaryTextColor = if (useLightSurfaceContent) LightInkPrimary else Color.White
+    val cardBgColor = if (useLightSurfaceContent) Color.White else Color.White.copy(alpha = 0.08f)
+    val focusedBgColor = if (useLightSurfaceContent) LightInkPrimary else Color.White
+    val focusedTextColor = if (useLightSurfaceContent) Color.White else LightInkPrimary
+
+    Box(
+        modifier = modifier
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (isFocused) focusedBgColor else cardBgColor)
+            .border(
+                width = 1.dp,
+                color = if (isFocused) focusedBgColor else primaryTextColor.copy(alpha = 0.16f),
+                shape = RoundedCornerShape(999.dp)
+            )
+            .onFocusChanged { isFocused = it.isFocused }
+            .focusable()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onToggleTheme
+            )
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = if (isDarkTheme) "Dark Theme" else "Light Theme",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (isFocused) focusedTextColor else primaryTextColor
+        )
     }
 }
 
