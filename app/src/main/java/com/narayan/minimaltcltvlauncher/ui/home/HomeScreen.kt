@@ -1,38 +1,58 @@
 package com.narayan.minimaltcltvlauncher.ui.home
 
+import android.Manifest
 import android.app.Application
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
-import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,10 +64,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -56,6 +79,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.tv.material3.ExperimentalTvMaterial3Api
@@ -69,6 +93,19 @@ import java.util.Locale
 import kotlin.math.min
 
 private const val TAG = "MinimalTvHomeScreen"
+
+private enum class ActiveDrawer {
+    NONE,
+    ALL_APPS,
+    CONNECTED_DEVICES
+}
+
+private data class ConnectedDeviceItem(
+    val name: String,
+    val subtitle: String,
+    val icon: ImageVector,
+    val actionIntent: Intent? = null
+)
 
 private data class HomeSlotSpec(
     val displayLabel: String,
@@ -143,6 +180,9 @@ fun HomeScreen(
     val apps by viewModel.apps.collectAsStateWithLifecycle()
     val favorites by viewModel.favorites.collectAsStateWithLifecycle()
 
+    var activeDrawer by remember { mutableStateOf(ActiveDrawer.NONE) }
+    val centerRowFocusRequester = remember { FocusRequester() }
+
     var currentTime by remember { mutableStateOf(formatTime()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -156,10 +196,7 @@ fun HomeScreen(
     }
 
     val backgroundColor = Color(0xFF0B0D11)
-
-    val wallpaperBitmap = remember {
-        loadWallpaperBitmap(context)
-    }
+    val wallpaperBitmap = remember { loadWallpaperBitmap(context) }
 
     Box(
         modifier = Modifier
@@ -180,29 +217,608 @@ fun HomeScreen(
             )
         }
 
+        // Far-left vertical frosted pill menu
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = 20.dp, bottom = 56.dp)
+        ) {
+            LeftVerticalPillMenu(
+                activeDrawer = activeDrawer,
+                onHomeClick = {
+                    activeDrawer = ActiveDrawer.NONE
+                    try {
+                        centerRowFocusRequester.requestFocus()
+                    } catch (_: Exception) {
+                    }
+                },
+                onSettingsClick = {
+                    activeDrawer = ActiveDrawer.NONE
+                    launchSystemSettings(context)
+                },
+                onAllAppsClick = {
+                    activeDrawer = if (activeDrawer == ActiveDrawer.ALL_APPS) {
+                        ActiveDrawer.NONE
+                    } else {
+                        ActiveDrawer.ALL_APPS
+                    }
+                },
+                onConnectedDevicesClick = {
+                    activeDrawer = if (activeDrawer == ActiveDrawer.CONNECTED_DEVICES) {
+                        ActiveDrawer.NONE
+                    } else {
+                        ActiveDrawer.CONNECTED_DEVICES
+                    }
+                }
+            )
+        }
+
+        // Main centered 6-app row
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(bottom = 56.dp),
+                .padding(start = 84.dp, end = 24.dp, bottom = 56.dp),
             contentAlignment = Alignment.Center
         ) {
             CenteredSixAppRow(
                 slots = homeSlots,
                 viewModel = viewModel,
                 favorites = favorites,
-                context = context
+                context = context,
+                firstItemFocusRequester = centerRowFocusRequester
             )
         }
 
+        // Slide-over drawer for All Apps or Connected Devices
+        if (activeDrawer != ActiveDrawer.NONE) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.52f))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        activeDrawer = ActiveDrawer.NONE
+                    }
+            ) {
+                when (activeDrawer) {
+                    ActiveDrawer.ALL_APPS -> {
+                        AllAppsDrawerPanel(
+                            apps = apps,
+                            viewModel = viewModel,
+                            context = context,
+                            onClose = { activeDrawer = ActiveDrawer.NONE },
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .padding(start = 88.dp, top = 24.dp, bottom = 76.dp)
+                        )
+                    }
+
+                    ActiveDrawer.CONNECTED_DEVICES -> {
+                        ConnectedDevicesDrawerPanel(
+                            context = context,
+                            onClose = { activeDrawer = ActiveDrawer.NONE },
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .padding(start = 88.dp, top = 24.dp, bottom = 76.dp)
+                        )
+                    }
+
+                    ActiveDrawer.NONE -> Unit
+                }
+            }
+        }
+
+        // Transparent bottom footer
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Color.Transparent)
                 .align(Alignment.BottomCenter)
         ) {
-            PanelFooter(
-                currentTime = currentTime
+            PanelFooter(currentTime = currentTime)
+        }
+    }
+}
+
+@Composable
+private fun LeftVerticalPillMenu(
+    activeDrawer: ActiveDrawer,
+    onHomeClick: () -> Unit,
+    onSettingsClick: () -> Unit,
+    onAllAppsClick: () -> Unit,
+    onConnectedDevicesClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = Color.White.copy(alpha = 0.10f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+        shadowElevation = 8.dp
+    ) {
+        Column(
+            modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            FrostedPillIconButton(
+                icon = Icons.Filled.Home,
+                contentDescription = "Home",
+                isSelected = activeDrawer == ActiveDrawer.NONE,
+                onClick = onHomeClick
             )
+            FrostedPillIconButton(
+                icon = Icons.Filled.Settings,
+                contentDescription = "Settings",
+                isSelected = false,
+                onClick = onSettingsClick
+            )
+            FrostedPillIconButton(
+                icon = Icons.Filled.Menu,
+                contentDescription = "All Apps",
+                isSelected = activeDrawer == ActiveDrawer.ALL_APPS,
+                onClick = onAllAppsClick
+            )
+            FrostedPillIconButton(
+                icon = Icons.Filled.AccountCircle,
+                contentDescription = "Connected Devices",
+                isSelected = activeDrawer == ActiveDrawer.CONNECTED_DEVICES,
+                onClick = onConnectedDevicesClick
+            )
+        }
+    }
+}
+
+@Composable
+private fun FrostedPillIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    var isFocused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (isFocused) 1.12f else 1f,
+        label = "pillBtnScale"
+    )
+    val bgColor = when {
+        isFocused -> Color.White.copy(alpha = 0.28f)
+        isSelected -> Color.White.copy(alpha = 0.16f)
+        else -> Color.White.copy(alpha = 0.05f)
+    }
+
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(CircleShape)
+            .background(bgColor)
+            .border(
+                width = if (isFocused) 1.5.dp else 0.dp,
+                color = if (isFocused) Color.White.copy(alpha = 0.65f) else Color.Transparent,
+                shape = CircleShape
+            )
+            .onFocusChanged { isFocused = it.isFocused }
+            .focusable()
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = Color.White,
+            modifier = Modifier.size(22.dp)
+        )
+    }
+}
+
+@Composable
+private fun AllAppsDrawerPanel(
+    apps: List<AppInfo>,
+    viewModel: HomeViewModel,
+    context: Context,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val sortedApps = remember(apps) {
+        apps.sortedBy { it.label.lowercase(Locale.ROOT) }
+    }
+
+    Surface(
+        modifier = modifier
+            .widthIn(min = 320.dp, max = 440.dp)
+            .fillMaxHeight(),
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xCC141820),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+        shadowElevation = 16.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "All Apps (${sortedApps.size})",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White
+                )
+                DrawerActionChip(
+                    icon = Icons.Filled.Close,
+                    label = "Close",
+                    onClick = onClose
+                )
+            }
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                items(sortedApps, key = { it.packageName }) { appItem ->
+                    var iconBitmap by remember(appItem.packageName) { mutableStateOf<ImageBitmap?>(null) }
+                    var isFocused by remember { mutableStateOf(false) }
+
+                    LaunchedEffect(appItem.packageName) {
+                        val bmp = viewModel.loadAppIconBitmap(appItem.packageName, listOf(appItem.packageName), 96)
+                            ?: loadAppDrawableFromPackages(context, appItem, listOf(appItem.packageName))
+                                ?.let { drawableToBitmap(it, 96, 96) }
+                        if (bmp != null) {
+                            iconBitmap = bmp.asImageBitmap()
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(
+                                if (isFocused) Color.White.copy(alpha = 0.18f)
+                                else Color.White.copy(alpha = 0.05f)
+                            )
+                            .border(
+                                width = if (isFocused) 1.dp else 0.dp,
+                                color = if (isFocused) Color.White.copy(alpha = 0.5f) else Color.Transparent,
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            .onFocusChanged { isFocused = it.isFocused }
+                            .focusable()
+                            .clickable {
+                                onClose()
+                                launchAppSafely(context, appItem.launchIntent)
+                            }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        if (iconBitmap != null) {
+                            Image(
+                                bitmap = iconBitmap!!,
+                                contentDescription = appItem.label,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = 0.08f))
+                                    .padding(3.dp)
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = 0.12f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.PlayArrow,
+                                    contentDescription = appItem.label,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+
+                        Text(
+                            text = appItem.label,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectedDevicesDrawerPanel(
+    context: Context,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var refreshKey by remember { mutableStateOf(0) }
+    val devices = remember(refreshKey) {
+        queryConnectedDevices(context)
+    }
+
+    Surface(
+        modifier = modifier
+            .widthIn(min = 320.dp, max = 440.dp)
+            .fillMaxHeight(),
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xCC141820),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+        shadowElevation = 16.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Connected Devices",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DrawerActionChip(
+                        icon = Icons.Filled.Refresh,
+                        label = "Refresh",
+                        onClick = { refreshKey++ }
+                    )
+                    DrawerActionChip(
+                        icon = Icons.Filled.Close,
+                        label = "Close",
+                        onClick = onClose
+                    )
+                }
+            }
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(devices) { device ->
+                    var isFocused by remember { mutableStateOf(false) }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(
+                                if (isFocused) Color.White.copy(alpha = 0.18f)
+                                else Color.White.copy(alpha = 0.06f)
+                            )
+                            .border(
+                                width = if (isFocused) 1.dp else 0.dp,
+                                color = if (isFocused) Color.White.copy(alpha = 0.5f) else Color.Transparent,
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            .onFocusChanged { isFocused = it.isFocused }
+                            .focusable()
+                            .clickable(enabled = device.actionIntent != null) {
+                                device.actionIntent?.let { intent ->
+                                    onClose()
+                                    launchAppSafely(context, intent)
+                                }
+                            }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.12f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = device.icon,
+                                contentDescription = device.name,
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = device.name,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = device.subtitle,
+                                fontSize = 12.sp,
+                                color = Color.White.copy(alpha = 0.72f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DrawerActionChip(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    var isFocused by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(
+                if (isFocused) Color.White.copy(alpha = 0.24f)
+                else Color.White.copy(alpha = 0.10f)
+            )
+            .onFocusChanged { isFocused = it.isFocused }
+            .focusable()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = Color.White,
+            modifier = Modifier.size(15.dp)
+        )
+        Text(
+            text = label,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = Color.White
+        )
+    }
+}
+
+@Suppress("MissingPermission")
+private fun queryConnectedDevices(context: Context): List<ConnectedDeviceItem> {
+    val items = mutableListOf<ConnectedDeviceItem>()
+
+    try {
+        val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        val adapter: BluetoothAdapter? = btManager?.adapter
+        if (adapter == null) {
+            items.add(
+                ConnectedDeviceItem(
+                    name = "Bluetooth",
+                    subtitle = "Unavailable on this TV build",
+                    icon = Icons.Filled.AccountCircle,
+                    actionIntent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                )
+            )
+        } else {
+            val stateLabel = if (adapter.isEnabled) "Bluetooth On" else "Bluetooth Off"
+            val canReadBonded = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
+                    PackageManager.PERMISSION_GRANTED
+            } else {
+                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH) ==
+                    PackageManager.PERMISSION_GRANTED
+            }
+
+            if (canReadBonded) {
+                val bonded = try {
+                    adapter.bondedDevices?.toList().orEmpty()
+                } catch (_: SecurityException) {
+                    emptyList()
+                }
+                if (bonded.isEmpty()) {
+                    items.add(
+                        ConnectedDeviceItem(
+                            name = "Bluetooth ($stateLabel)",
+                            subtitle = "No paired remotes, headphones, or laptops listed",
+                            icon = Icons.Filled.AccountCircle,
+                            actionIntent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                        )
+                    )
+                } else {
+                    bonded.forEach { dev ->
+                        val devName = try {
+                            dev.name ?: dev.address
+                        } catch (_: SecurityException) {
+                            dev.address
+                        }
+                        items.add(
+                            ConnectedDeviceItem(
+                                name = devName,
+                                subtitle = "Paired Bluetooth • ${dev.address}",
+                                icon = Icons.Filled.AccountCircle,
+                                actionIntent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                            )
+                        )
+                    }
+                }
+            } else {
+                items.add(
+                    ConnectedDeviceItem(
+                        name = "Bluetooth ($stateLabel)",
+                        subtitle = "Tap to open Bluetooth & paired devices",
+                        icon = Icons.Filled.AccountCircle,
+                        actionIntent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                    )
+                )
+            }
+        }
+    } catch (_: Exception) {
+        items.add(
+            ConnectedDeviceItem(
+                name = "Bluetooth Settings",
+                subtitle = "Open system Bluetooth controls",
+                icon = Icons.Filled.AccountCircle,
+                actionIntent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+            )
+        )
+    }
+
+    items.add(
+        ConnectedDeviceItem(
+            name = "Cast / Screencast / Remotes",
+            subtitle = "Open TV input & connected device settings",
+            icon = Icons.Filled.Settings,
+            actionIntent = Intent(Settings.ACTION_CAST_SETTINGS)
+        )
+    )
+
+    items.add(
+        ConnectedDeviceItem(
+            name = "Display & Input Settings",
+            subtitle = "HDMI / display / system preferences",
+            icon = Icons.Filled.Settings,
+            actionIntent = Intent(Settings.ACTION_SETTINGS)
+        )
+    )
+
+    return items
+}
+
+private fun launchSystemSettings(context: Context) {
+    val tvSettings = context.packageManager.getLeanbackLaunchIntentForPackage("com.android.tv.settings")
+        ?: context.packageManager.getLaunchIntentForPackage("com.android.tv.settings")
+    launchAppSafely(context, tvSettings ?: Intent(Settings.ACTION_SETTINGS))
+}
+
+private fun launchAppSafely(context: Context, intent: Intent) {
+    try {
+        context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (_: Exception) {
+        try {
+            context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {
         }
     }
 }
@@ -400,7 +1016,8 @@ private fun CenteredSixAppRow(
     slots: List<ResolvedHomeSlot>,
     viewModel: HomeViewModel,
     favorites: Set<String>,
-    context: Context
+    context: Context,
+    firstItemFocusRequester: FocusRequester? = null
 ) {
     Row(
         modifier = Modifier
@@ -409,14 +1026,15 @@ private fun CenteredSixAppRow(
         horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        slots.forEach { slot ->
+        slots.forEachIndexed { index, slot ->
             AppCircleTile(
                 app = slot.appInfo,
                 candidatePackages = slot.candidatePackages,
                 defaultIcon = slot.defaultIcon,
                 viewModel = viewModel,
                 isFavorite = favorites.contains(slot.appInfo.packageName),
-                context = context
+                context = context,
+                focusRequester = if (index == 0) firstItemFocusRequester else null
             )
         }
     }
@@ -430,7 +1048,8 @@ fun AppCircleTile(
     defaultIcon: ImageVector,
     viewModel: HomeViewModel,
     isFavorite: Boolean,
-    context: Context
+    context: Context,
+    focusRequester: FocusRequester? = null
 ) {
     var iconBitmap by remember(app.packageName, candidatePackages) { mutableStateOf<ImageBitmap?>(null) }
     var isFocused by remember { mutableStateOf(false) }
@@ -464,16 +1083,18 @@ fun AppCircleTile(
     Column(
         modifier = Modifier
             .background(Color.Transparent)
+            .then(
+                if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier
+            )
             .onFocusChanged { isFocused = it.isFocused }
             .combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = {
-                    try {
-                        context.startActivity(
-                            app.launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
-                    } catch (_: Exception) {
+                    if (!app.packageName.startsWith("slot.placeholder.")) {
+                        launchAppSafely(context, app.launchIntent)
+                    } else {
+                        launchAppSafely(context, app.launchIntent)
                     }
                 },
                 onLongClick = {
