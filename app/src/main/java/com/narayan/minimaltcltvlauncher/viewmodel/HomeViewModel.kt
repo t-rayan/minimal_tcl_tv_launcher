@@ -2,6 +2,9 @@ package com.narayan.minimaltcltvlauncher.viewmodel
 
 import android.app.Application
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
@@ -17,6 +20,8 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * ViewModel that holds the list of discovered apps.
@@ -116,6 +121,145 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         try {
             (getApplication() as Application).packageManager.getApplicationIcon(packageName)
         } catch (e: PackageManager.NameNotFoundException) {
+            null
+        }
+    }
+
+    /**
+     * Loads the best available app icon as a square Bitmap on IO thread.
+     * Tries multiple package names (candidate packages) for apps with aliases.
+     * Handles TV banner center-cropping for wide (320x180) banners.
+     * Fallback chain per package: banner (center-cropped if wide) → icon (fit) → next package.
+     * Returns null if nothing is available.
+     */
+    suspend fun loadAppIconBitmap(packageName: String, candidatePackages: List<String> = emptyList(), targetSize: Int = 160): Bitmap? = withContext(Dispatchers.IO) {
+        val pm = (getApplication() as Application).packageManager
+        
+        // Build list of packages to try: primary + candidates, deduplicated
+        val packagesToTry = (listOf(packageName) + candidatePackages).distinct()
+
+        for (pkg in packagesToTry) {
+            // Try banner first (TV apps often have banners, not square icons)
+            val bannerDrawable = try {
+                pm.getApplicationBanner(pkg)
+            } catch (e: Exception) {
+                null
+            }
+
+            bannerDrawable?.let { drawable ->
+                // Detect if banner is wide (TV banner) vs square-ish (some apps have square banners)
+                val intrinsicWidth = drawable.intrinsicWidth
+                val intrinsicHeight = drawable.intrinsicHeight
+                val isWideBanner = intrinsicWidth > 0 && intrinsicHeight > 0 && 
+                    (intrinsicWidth.toFloat() / intrinsicHeight > 1.5f) // 320x180 ≈ 1.78 ratio
+                
+                val bitmap = if (isWideBanner) {
+                    // Wide TV banner: center-crop to square
+                    drawableToBitmapCenterCrop(drawable, targetSize, targetSize)
+                } else {
+                    // Square-ish banner or unknown: scale to fit (no crop)
+                    drawableToBitmap(drawable, targetSize, targetSize)
+                }
+                
+                if (bitmap != null) return@withContext bitmap
+            }
+
+            // Fallback to regular app icon
+            val iconDrawable = try {
+                pm.getApplicationIcon(pkg)
+            } catch (e: Exception) {
+                null
+            }
+
+            iconDrawable?.let { drawable ->
+                val bitmap = drawableToBitmap(drawable, targetSize, targetSize)
+                if (bitmap != null) return@withContext bitmap
+            }
+        }
+
+        null
+    }
+
+    /**
+     * Converts a Drawable to a Bitmap with center-cropping.
+     * Handles wide banners (320x180) by center-cropping to square.
+     * Scales to fill the target bounds, cropping excess.
+     */
+    private fun drawableToBitmapCenterCrop(drawable: Drawable, targetWidth: Int, targetHeight: Int): Bitmap? {
+        return try {
+            if (drawable is BitmapDrawable && drawable.bitmap != null) {
+                val src = drawable.bitmap
+                // If already close to target, just scale
+                if (src.width <= targetWidth * 2 && src.height <= targetHeight * 2) {
+                    return Bitmap.createScaledBitmap(src, targetWidth, targetHeight, true)
+                }
+                // Otherwise center-crop
+                return centerCropBitmap(src, targetWidth, targetHeight)
+            } else {
+                val width = drawable.intrinsicWidth.takeIf { it > 0 } ?: targetWidth
+                val height = drawable.intrinsicHeight.takeIf { it > 0 } ?: targetHeight
+                val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bitmap)
+                // Scale to fill target (may crop), then center
+                val scale = max(targetWidth.toFloat() / width, targetHeight.toFloat() / height)
+                val drawWidth = (width * scale).toInt().coerceAtLeast(1)
+                val drawHeight = (height * scale).toInt().coerceAtLeast(1)
+                val left = (targetWidth - drawWidth) / 2
+                val top = (targetHeight - drawHeight) / 2
+                val copy = drawable.constantState?.newDrawable()?.mutate() ?: drawable.mutate()
+                copy.setBounds(left, top, left + drawWidth, top + drawHeight)
+                copy.draw(canvas)
+                bitmap
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Simple center-crop for Bitmaps.
+     */
+    private fun centerCropBitmap(src: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
+        val srcWidth = src.width
+        val srcHeight = src.height
+        val scale = max(targetWidth.toFloat() / srcWidth, targetHeight.toFloat() / srcHeight)
+        val scaledWidth = (srcWidth * scale).toInt()
+        val scaledHeight = (srcHeight * scale).toInt()
+        val scaled = Bitmap.createScaledBitmap(src, scaledWidth, scaledHeight, true)
+        val x = (scaledWidth - targetWidth) / 2
+        val y = (scaledHeight - targetHeight) / 2
+        return Bitmap.createBitmap(scaled, x, y, targetWidth, targetHeight)
+    }
+
+    /**
+     * Converts a Drawable to a Bitmap, scaling to fit (no cropping).
+     * Used for square icons.
+     */
+    private fun drawableToBitmap(drawable: Drawable, targetWidth: Int, targetHeight: Int): Bitmap? {
+        return try {
+            if (drawable is BitmapDrawable && drawable.bitmap != null) {
+                val src = drawable.bitmap
+                if (src.width <= targetWidth && src.height <= targetHeight) {
+                    src
+                } else {
+                    Bitmap.createScaledBitmap(src, targetWidth, targetHeight, true)
+                }
+            } else {
+                val width = drawable.intrinsicWidth.takeIf { it > 0 } ?: targetWidth
+                val height = drawable.intrinsicHeight.takeIf { it > 0 } ?: targetHeight
+                val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bitmap)
+                val scale = min(targetWidth.toFloat() / width, targetHeight.toFloat() / height)
+                val drawWidth = (width * scale).toInt().coerceAtLeast(1)
+                val drawHeight = (height * scale).toInt().coerceAtLeast(1)
+                val left = (targetWidth - drawWidth) / 2
+                val top = (targetHeight - drawHeight) / 2
+                val copy = drawable.constantState?.newDrawable()?.mutate() ?: drawable.mutate()
+                copy.setBounds(left, top, left + drawWidth, top + drawHeight)
+                copy.draw(canvas)
+                bitmap
+            }
+        } catch (_: Exception) {
             null
         }
     }

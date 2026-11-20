@@ -1,6 +1,7 @@
 package com.narayan.minimaltcltvlauncher.ui.home
 
 import android.app.Application
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -9,42 +10,30 @@ import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.provider.Settings
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
+import android.util.Log
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Divider
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.outlined.Apps
-import androidx.compose.material.icons.outlined.Tv
-import androidx.compose.material.icons.outlined.Cast
-import androidx.compose.material.icons.outlined.ViewModule
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -54,16 +43,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.BorderStroke
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -73,9 +60,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Icon
-import androidx.tv.material3.MaterialTheme
-import androidx.tv.material3.Surface
-import androidx.tv.material3.Text
 import com.narayan.minimaltcltvlauncher.model.AppInfo
 import com.narayan.minimaltcltvlauncher.ui.theme.FavoriteStar
 import com.narayan.minimaltcltvlauncher.viewmodel.HomeViewModel
@@ -83,6 +67,68 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.min
+
+private const val TAG = "MinimalTvHomeScreen"
+
+private data class HomeSlotSpec(
+    val displayLabel: String,
+    val defaultIcon: ImageVector,
+    val exactPackages: List<String> = emptyList(),
+    val packageHints: List<String> = emptyList(),
+    val labelHints: List<String> = emptyList(),
+    val fallbackIntent: Intent? = null
+)
+
+private data class ResolvedHomeSlot(
+    val appInfo: AppInfo,
+    val candidatePackages: List<String>,
+    val defaultIcon: ImageVector
+)
+
+private val HOME_SIX_SLOTS = listOf(
+    HomeSlotSpec(
+        displayLabel = "YouTube",
+        defaultIcon = Icons.Filled.PlayArrow,
+        exactPackages = listOf("com.google.android.youtube.tv"),
+        packageHints = listOf("com.google.android.youtube.tv", "com.google.android.youtube"),
+        labelHints = listOf("youtube")
+    ),
+    HomeSlotSpec(
+        displayLabel = "Amazon Prime",
+        defaultIcon = Icons.Filled.PlayArrow,
+        exactPackages = listOf("com.amazon.amazonvideo.livingroom"),
+        packageHints = listOf("com.amazon.amazonvideo.livingroom", "amazonvideo", "primevideo"),
+        labelHints = listOf("prime video", "amazon prime", "prime")
+    ),
+    HomeSlotSpec(
+        displayLabel = "Settings",
+        defaultIcon = Icons.Filled.Settings,
+        exactPackages = listOf("com.android.tv.settings", "com.android.settings"),
+        packageHints = listOf("com.android.tv.settings", "com.android.settings"),
+        labelHints = listOf("settings"),
+        fallbackIntent = Intent(Settings.ACTION_SETTINGS)
+    ),
+    HomeSlotSpec(
+        displayLabel = "Play Store",
+        defaultIcon = Icons.Filled.Menu,
+        exactPackages = listOf("com.android.vending"),
+        packageHints = listOf("com.android.vending", "finsky"),
+        labelHints = listOf("play store", "google play")
+    ),
+    HomeSlotSpec(
+        displayLabel = "T-solo",
+        defaultIcon = Icons.Filled.Menu,
+        packageHints = listOf("t-solo", "tsolo", "t_solo"),
+        labelHints = listOf("t-solo", "tsolo", "t solo")
+    ),
+    HomeSlotSpec(
+        displayLabel = "NetMirror",
+        defaultIcon = Icons.Filled.PlayArrow,
+        exactPackages = listOf("app.netmirror.newtv"),
+        packageHints = listOf("app.netmirror.newtv", "netmirror", "mirror"),
+        labelHints = listOf("netmirror", "net mirror", "mirror")
+    )
+)
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
@@ -97,277 +143,238 @@ fun HomeScreen(
     val apps by viewModel.apps.collectAsStateWithLifecycle()
     val favorites by viewModel.favorites.collectAsStateWithLifecycle()
 
-    // Clock state - updates once per minute
     var currentTime by remember { mutableStateOf(formatTime()) }
-    var currentDate by remember { mutableStateOf(formatDate()) }
     LaunchedEffect(Unit) {
         while (true) {
             currentTime = formatTime()
-            currentDate = formatDate()
             kotlinx.coroutines.delay(60_000L)
         }
     }
 
-    // Split apps into favorites and remaining apps
-    val (favoriteApps, otherApps) = remember(apps, favorites) {
-        Pair(
-            apps.filter { favorites.contains(it.packageName) },
-            apps.filter { !favorites.contains(it.packageName) }
-        )
+    val homeSlots = remember(apps) {
+        resolveSixHomeSlots(context, apps)
     }
 
-    // View state: true = Pinned, false = All Apps
-    var showPinned by remember { mutableStateOf(favoriteApps.isNotEmpty()) }
-
-    // Current app list based on view mode
-    val currentApps = if (showPinned) favoriteApps else otherApps
-
-    // Deep dark background colors
     val backgroundColor = Color(0xFF0B0D11)
-    val dividerColor = Color.White.copy(alpha = 0.08f)
-    val footerBgColor = Color(0xFF14171D)
-    val focusBgColor = Color.White.copy(alpha = 0.12f)
-    val focusBorderColor = Color.White.copy(alpha = 0.25f)
 
-    // Load low-res wallpaper bitmap (downsampled to ~640x360 for memory efficiency)
-    val wallpaperBitmap by remember {
-        mutableStateOf<ImageBitmap?>(loadWallpaperBitmap(context))
+    val wallpaperBitmap = remember {
+        loadWallpaperBitmap(context)
     }
 
-    // Main layout: full-screen background with wallpaper + left nav rail + centered transparent container
     Box(
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier
+            .fillMaxSize()
+            .background(backgroundColor)
     ) {
-        // Full-screen wallpaper layer with soft ambient look
         if (wallpaperBitmap != null) {
-            // Use dark atmospheric scrim overlay for soft "blurred" look on all API levels
-            // This avoids memory-heavy blur operations and works reliably on Android 11+
-            Box(
+            Image(
+                bitmap = wallpaperBitmap,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
-            ) {
-                Image(
-                    bitmap = wallpaperBitmap!!,
-                    contentDescription = "",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-                // Dark scrim overlay for soft "blurred" atmospheric look
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color(0x990B0D11)) // Dark scrim overlay (60% opacity)
-                )
-            }
-        } else {
-            // Fallback: Deep dark atmospheric gradient background
+            )
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(backgroundColor)
+                    .background(Color(0x990B0D11))
             )
         }
 
-        // Left floating pill navigation rail
         Box(
             modifier = Modifier
-                .fillMaxHeight()
-                .padding(start = 24.dp, top = 24.dp, bottom = 24.dp)
-                .align(Alignment.CenterStart)
+                .fillMaxSize()
+                .padding(bottom = 56.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Surface(
-                color = Color(0xCC161920),
-                border = androidx.compose.ui.graphics.BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
-                shape = RoundedCornerShape(50.dp),
-                modifier = Modifier
-                    .padding(horizontal = 8.dp, vertical = 16.dp)
-            ) {
-                NavigationRail(
-                    showPinned = showPinned,
-                    onHomeClick = { showPinned = true },
-                    onAllAppsClick = { showPinned = false },
-                    onConnectedDevicesClick = {
-                        try {
-                            context.startActivity(
-                                Intent("android.settings.INPUT_SETTINGS").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            )
-                        } catch (_: Exception) {
-                            try {
-                                context.startActivity(
-                                    Intent(Settings.ACTION_CAST_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                )
-                            } catch (_: Exception) {
-                                try {
-                                    context.startActivity(
-                                        Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    )
-                                } catch (_: Exception) {
-                                    // Ignore all failures
-                                }
-                            }
-                        }
-                    },
-                    onSettingsClick = {
-                        try {
-                            context.startActivity(
-                                Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            )
-                        } catch (_: Exception) {
-                            // Ignore
-                        }
+            CenteredSixAppRow(
+                slots = homeSlots,
+                viewModel = viewModel,
+                favorites = favorites,
+                context = context
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.Transparent)
+                .align(Alignment.BottomCenter)
+        ) {
+            PanelFooter(
+                currentTime = currentTime
+            )
+        }
+    }
+}
+
+private fun buildLaunchIntent(context: Context, packageName: String, fallback: Intent?): Intent {
+    val pm = context.packageManager
+    return pm.getLeanbackLaunchIntentForPackage(packageName)
+        ?: pm.getLaunchIntentForPackage(packageName)
+        ?: fallback
+        ?: Intent(Intent.ACTION_MAIN).setPackage(packageName)
+}
+
+private fun resolveSixHomeSlots(context: Context, installedApps: List<AppInfo>): List<ResolvedHomeSlot> {
+    val usedPackages = mutableSetOf<String>()
+
+    return HOME_SIX_SLOTS.mapIndexed { index, slot ->
+        val exactMatch = slot.exactPackages.firstNotNullOfOrNull { exactPkg ->
+            installedApps.firstOrNull { app ->
+                app.packageName !in usedPackages &&
+                    app.packageName.equals(exactPkg, ignoreCase = true)
+            }
+        }
+
+        val hintMatch = exactMatch ?: installedApps.firstOrNull { app ->
+            if (app.packageName in usedPackages) return@firstOrNull false
+            val pkgLower = app.packageName.lowercase(Locale.ROOT)
+            val labelLower = app.label.lowercase(Locale.ROOT)
+            val pkgMatch = slot.packageHints.any { hint ->
+                pkgLower.contains(hint.trim().lowercase(Locale.ROOT))
+            }
+            val labelMatch = slot.labelHints.any { hint ->
+                labelLower.contains(hint.lowercase(Locale.ROOT))
+            }
+            pkgMatch || labelMatch
+        }
+
+        if (hintMatch != null) {
+            usedPackages.add(hintMatch.packageName)
+            val candidates = (listOf(hintMatch.packageName) + slot.exactPackages).distinct()
+            ResolvedHomeSlot(
+                appInfo = hintMatch,
+                candidatePackages = candidates,
+                defaultIcon = slot.defaultIcon
+            )
+        } else {
+            val primaryPkg = slot.exactPackages.firstOrNull()
+            val launchIntent = if (primaryPkg != null) {
+                buildLaunchIntent(context, primaryPkg, slot.fallbackIntent)
+            } else {
+                slot.fallbackIntent ?: Intent(Intent.ACTION_MAIN)
+            }
+            val fallbackPkg = primaryPkg
+                ?: "slot.placeholder.$index.${slot.displayLabel.lowercase(Locale.ROOT).replace("[^a-z0-9]".toRegex(), "")}"
+            ResolvedHomeSlot(
+                appInfo = AppInfo(
+                    packageName = fallbackPkg,
+                    label = slot.displayLabel,
+                    launchIntent = launchIntent
+                ),
+                candidatePackages = slot.exactPackages,
+                defaultIcon = slot.defaultIcon
+            )
+        }
+    }
+}
+
+private fun loadAppDrawableFromPackages(
+    context: Context,
+    app: AppInfo,
+    candidatePackages: List<String>
+): Drawable? {
+    val pm = context.packageManager
+    val pkgsToTry = (
+        candidatePackages +
+            if (!app.packageName.startsWith("slot.placeholder.")) listOf(app.packageName) else emptyList()
+        ).distinct()
+
+    for (pkg in pkgsToTry) {
+        try {
+            val leanbackIntent = pm.getLeanbackLaunchIntentForPackage(pkg)
+            if (leanbackIntent != null) {
+                val component: ComponentName? = leanbackIntent.component
+                if (component != null) {
+                    try {
+                        pm.getActivityIcon(component)?.let { return it }
+                    } catch (_: Exception) {
                     }
-                )
+                    try {
+                        pm.getActivityBanner(component)?.let { return it }
+                    } catch (_: Exception) {
+                    }
+                }
+                val resolveInfo = pm.resolveActivity(leanbackIntent, 0)
+                resolveInfo?.loadIcon(pm)?.let { return it }
             }
+        } catch (_: Exception) {
         }
 
-        // Centered transparent container (no background, no border)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(0.64f)
-                .fillMaxHeight(0.86f)
-                .align(Alignment.Center)
-        ) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(0.dp)
-            ) {
-                // Main grid area (no top header or divider)
-                AppGrid(
-                    apps = currentApps,
-                    viewModel = viewModel,
-                    context = context,
-                    isPinnedView = showPinned,
-                    focusBgColor = focusBgColor,
-                    focusBorderColor = focusBorderColor
-                )
+        try {
+            val launchIntent = pm.getLaunchIntentForPackage(pkg)
+            if (launchIntent != null) {
+                val component: ComponentName? = launchIntent.component
+                if (component != null) {
+                    try {
+                        pm.getActivityIcon(component)?.let { return it }
+                    } catch (_: Exception) {
+                    }
+                    try {
+                        pm.getActivityBanner(component)?.let { return it }
+                    } catch (_: Exception) {
+                    }
+                }
+                val resolveInfo = pm.resolveActivity(launchIntent, 0)
+                resolveInfo?.loadIcon(pm)?.let { return it }
+            }
+        } catch (_: Exception) {
+        }
 
-                // Divider before footer
-                Divider(
-                    color = dividerColor,
-                    thickness = 1.dp,
-                    modifier = Modifier.padding(horizontal = 24.dp)
-                )
+        try {
+            val appInfo = pm.getApplicationInfo(pkg, 0)
+            if (appInfo.icon != 0) {
+                try {
+                    val appRes = pm.getResourcesForApplication(appInfo)
+                    appRes.getDrawable(appInfo.icon, null)?.let { return it }
+                } catch (_: Exception) {
+                }
+            }
+            if (appInfo.banner != 0) {
+                try {
+                    val appRes = pm.getResourcesForApplication(appInfo)
+                    appRes.getDrawable(appInfo.banner, null)?.let { return it }
+                } catch (_: Exception) {
+                }
+            }
+            try {
+                pm.getApplicationIcon(pkg)?.let { return it }
+            } catch (_: Exception) {
+            }
+            try {
+                pm.getApplicationBanner(pkg)?.let { return it }
+            } catch (_: Exception) {
+            }
+        } catch (_: Exception) {
+        }
+    }
 
-                // Bottom footer: clock/date + settings
-                PanelFooter(
-                    currentTime = currentTime,
-                    currentDate = currentDate,
-                    onSettingsClick = {
-                        try {
-                            context.startActivity(
-                                Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            )
-                        } catch (_: Exception) {
-                            // Ignore if settings intent cannot be resolved
-                        }
-                    },
-                    footerBgColor = footerBgColor,
-                    focusBgColor = focusBgColor,
-                    focusBorderColor = focusBorderColor
-                )
+    if (app.launchIntent.action == Settings.ACTION_SETTINGS) {
+        for (pkg in listOf("com.android.tv.settings", "com.android.settings")) {
+            try {
+                pm.getApplicationIcon(pkg)?.let { return it }
+            } catch (_: Exception) {
             }
         }
     }
+
+    return null
 }
 
-@OptIn(ExperimentalTvMaterial3Api::class, ExperimentalFoundationApi::class)
-@Composable
-fun NavigationRail(
-    showPinned: Boolean,
-    onHomeClick: () -> Unit,
-    onAllAppsClick: () -> Unit,
-    onConnectedDevicesClick: () -> Unit,
-    onSettingsClick: () -> Unit
-) {
-    val railFocusedIndex by remember { mutableStateOf(0) }
-    val railItems = listOf(
-        NavigationRailItem(
-            icon = Icons.Filled.Home,
-            contentDescription = "Home",
-            action = onHomeClick
-        ),
-        NavigationRailItem(
-            icon = Icons.Outlined.ViewModule,
-            contentDescription = "All Apps",
-            action = onAllAppsClick
-        ),
-        NavigationRailItem(
-            icon = Icons.Outlined.Cast,
-            contentDescription = "Connected Devices",
-            action = onConnectedDevicesClick
-        ),
-        NavigationRailItem(
-            icon = Icons.Filled.Settings,
-            contentDescription = "Settings",
-            action = onSettingsClick
-        )
-    )
-
-    Column(
-        modifier = Modifier
-            .fillMaxHeight()
-            .padding(vertical = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        railItems.forEachIndexed { index, item ->
-            var isFocused by remember { mutableStateOf(false) }
-            val focusScale by animateFloatAsState(
-                targetValue = if (isFocused) 1.08f else 1f,
-                animationSpec = tween(120)
-            )
-            val focusAlpha by animateFloatAsState(
-                targetValue = if (isFocused) 1f else 0.7f,
-                animationSpec = tween(120)
-            )
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onFocusChanged { isFocused = it.isFocused }
-                    .graphicsLayer { scaleX = focusScale; scaleY = focusScale }
-                    .combinedClickable(
-                        onClick = item.action,
-                        onLongClick = {}
-                    )
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
-            ) {
-                Icon(
-                    imageVector = item.icon,
-                    contentDescription = item.contentDescription,
-                    modifier = Modifier.size(28.dp),
-                    tint = Color.White.copy(alpha = focusAlpha)
-                )
-            }
-        }
-    }
-}
-
-private data class NavigationRailItem(
-    val icon: androidx.compose.ui.graphics.vector.ImageVector,
-    val contentDescription: String,
-    val action: () -> Unit
-)
-
-// Helper function to load and downsample wallpaper bitmap for low memory usage
-private fun loadWallpaperBitmap(context: Context): ImageBitmap? {
+fun loadWallpaperBitmap(context: Context): ImageBitmap? {
     return try {
-        // Try to load a local wallpaper drawable (res/drawable/wallpaper.jpg or similar)
-        // If none exists, this will return null and we'll use the fallback gradient
         val resources = context.resources
-        // Check for common wallpaper resource names
-        val drawableId = resources.getIdentifier("wallpaper", "drawable", context.packageName)
-            ?: resources.getIdentifier("tv_wallpaper", "drawable", context.packageName)
-            ?: resources.getIdentifier("background", "drawable", context.packageName)
-            ?: 0
+        val candidates = listOf("wallpaper", "tv_wallpaper", "background")
+        val drawableId = candidates
+            .map { name -> resources.getIdentifier(name, "drawable", context.packageName) }
+            .firstOrNull { id -> id != 0 } ?: 0
 
         if (drawableId != 0) {
-            // Decode with downsampling to max 640x360 (or 960x540) to keep memory low
             val options = BitmapFactory.Options().apply {
                 inJustDecodeBounds = true
             }
             BitmapFactory.decodeResource(resources, drawableId, options)
 
-            // Calculate sample size for ~640x360 max
             val targetWidth = 640
             val targetHeight = 360
             var sampleSize = 1
@@ -378,82 +385,38 @@ private fun loadWallpaperBitmap(context: Context): ImageBitmap? {
             options.inSampleSize = sampleSize
             options.inPreferredConfig = Bitmap.Config.ARGB_8888
 
-            val bitmap = BitmapFactory.decodeResource(resources, drawableId, options)
-            bitmap?.asImageBitmap()
+            BitmapFactory.decodeResource(resources, drawableId, options)?.asImageBitmap()
         } else {
             null
         }
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         null
     }
 }
 
 @OptIn(ExperimentalTvMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun AppGrid(
-    apps: List<AppInfo>,
+private fun CenteredSixAppRow(
+    slots: List<ResolvedHomeSlot>,
     viewModel: HomeViewModel,
-    context: Context,
-    isPinnedView: Boolean,
-    focusBgColor: Color,
-    focusBorderColor: Color
+    favorites: Set<String>,
+    context: Context
 ) {
-    if (apps.isEmpty()) {
-        // Empty state
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(32.dp), // More padding
-            contentAlignment = Alignment.Center
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Menu,
-                    contentDescription = "",
-                    tint = Color.White.copy(alpha = 0.4f),
-                    modifier = Modifier.size(56.dp) // Larger
-                )
-                Text(
-                    text = if (isPinnedView) "No pinned apps yet" else "No apps found",
-                    fontSize = 18.sp,
-                    color = Color.White.copy(alpha = 0.6f),
-                    textAlign = TextAlign.Center
-                )
-                if (isPinnedView) {
-                    Text(
-                        text = "Long-press any app in All Apps to pin it",
-                        fontSize = 14.sp,
-                        color = Color.White.copy(alpha = 0.45f),
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
-        }
-        return
-    }
-
-    val gridState = rememberLazyGridState()
-
-    LazyVerticalGrid(
-        state = gridState,
-        columns = GridCells.Fixed(5),
-        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 20.dp), // Adjusted for narrower panel
-        verticalArrangement = Arrangement.spacedBy(20.dp),
-        horizontalArrangement = Arrangement.spacedBy(24.dp),
+    Row(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        items(apps, key = { it.packageName }) { app ->
-            AppTile(
-                app = app,
+        slots.forEach { slot ->
+            AppCircleTile(
+                app = slot.appInfo,
+                candidatePackages = slot.candidatePackages,
+                defaultIcon = slot.defaultIcon,
                 viewModel = viewModel,
-                isFavorite = viewModel.isFavorite(app.packageName),
-                context = context,
-                focusBgColor = focusBgColor,
-                focusBorderColor = focusBorderColor
+                isFavorite = favorites.contains(slot.appInfo.packageName),
+                context = context
             )
         }
     }
@@ -461,203 +424,208 @@ fun AppGrid(
 
 @OptIn(ExperimentalTvMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun AppTile(
+fun AppCircleTile(
     app: AppInfo,
+    candidatePackages: List<String>,
+    defaultIcon: ImageVector,
     viewModel: HomeViewModel,
     isFavorite: Boolean,
-    context: Context,
-    focusBgColor: Color,
-    focusBorderColor: Color
+    context: Context
 ) {
-    var iconBitmap by remember(app.packageName) { mutableStateOf<ImageBitmap?>(null) }
+    var iconBitmap by remember(app.packageName, candidatePackages) { mutableStateOf<ImageBitmap?>(null) }
     var isFocused by remember { mutableStateOf(false) }
-    val focusRequester = remember { FocusRequester() }
+    val interactionSource = remember { MutableInteractionSource() }
 
-    LaunchedEffect(app.packageName) {
-        val iconDrawable = viewModel.loadIcon(app.packageName)
-        if (iconDrawable != null) {
-            // Downsample to 96x96 max for icon tile - keeps Native Heap low
-            iconBitmap = drawableToBitmap(iconDrawable, 96, 96)?.asImageBitmap()
+    LaunchedEffect(app.packageName, candidatePackages) {
+        val directDrawable = loadAppDrawableFromPackages(context, app, candidatePackages)
+        val directBitmap = directDrawable?.let { drawableToBitmap(it, 160, 160) }
+        val vmBitmap = if (directBitmap == null) {
+            viewModel.loadAppIconBitmap(app.packageName, candidatePackages, 160)
+        } else null
+
+        val finalBitmap = directBitmap ?: vmBitmap
+        if (finalBitmap != null) {
+            iconBitmap = finalBitmap.asImageBitmap()
+        } else {
+            Log.d(TAG, "No bitmap for label=${app.label}, pkg=${app.packageName}, candidates=$candidatePackages")
         }
     }
 
-    val tileShape = CircleShape // Changed to CircleShape for circular icons
-    val focusScale by animateFloatAsState(
-        targetValue = if (isFocused) 1.06f else 1f,
-        animationSpec = tween(150)
+    val baseIconSize = 62.dp
+    val focusedIconSize by animateDpAsState(
+        targetValue = if (isFocused) 74.dp else baseIconSize,
+        label = "iconSize"
+    )
+    val shadowElevation by animateDpAsState(
+        targetValue = if (isFocused) 12.dp else 2.dp,
+        label = "shadowElevation"
     )
 
-    Box(
+    Column(
         modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(1f)
-            .background(if (isFocused) focusBgColor else Color.Transparent, tileShape)
-            .border(
-                width = if (isFocused) 1.dp else 0.dp,
-                color = if (isFocused) focusBorderColor else Color.Transparent,
-                shape = tileShape
-            )
+            .background(Color.Transparent)
             .onFocusChanged { isFocused = it.isFocused }
             .combinedClickable(
+                interactionSource = interactionSource,
+                indication = null,
                 onClick = {
                     try {
-                        context.startActivity(app.launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        context.startActivity(
+                            app.launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
                     } catch (_: Exception) {
-                        // Ignore launch failures
                     }
                 },
-                onLongClick = { viewModel.toggleFavorite(app.packageName) }
+                onLongClick = {
+                    if (!app.packageName.startsWith("slot.placeholder.")) {
+                        viewModel.toggleFavorite(app.packageName)
+                    }
+                }
             )
-            .graphicsLayer { scaleX = focusScale; scaleY = focusScale }
+            .padding(horizontal = 4.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Column(
+        Box(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 8.dp, vertical = 10.dp), // More padding
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp) // More spacing
+                .size(78.dp)
+                .background(Color.Transparent),
+            contentAlignment = Alignment.Center
         ) {
-            // App icon - 52dp, now CIRCULAR with subtle dark circular backing
             if (iconBitmap != null) {
                 Box(
                     modifier = Modifier
-                        .size(52.dp)
-                        .background(Color.White.copy(alpha = 0.08f), CircleShape), // Subtle dark circular backing
+                        .size(focusedIconSize)
+                        .shadow(
+                            elevation = shadowElevation,
+                            shape = CircleShape,
+                            clip = false,
+                            ambientColor = Color.Black,
+                            spotColor = Color.Black
+                        )
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.08f))
+                        .padding(6.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Box(
+                    Image(
+                        bitmap = iconBitmap!!,
+                        contentDescription = app.label,
+                        contentScale = ContentScale.Fit,
                         modifier = Modifier
-                            .size(48.dp) // Slightly smaller to show backing ring
-                            .clip(CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Image(
-                            bitmap = iconBitmap!!,
-                            contentDescription = app.label,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(CircleShape)
-                        )
-                    }
+                            .fillMaxSize()
+                            .clip(CircleShape)
+                    )
                 }
             } else {
-                // Placeholder with same circular backing
                 Box(
                     modifier = Modifier
-                        .size(52.dp)
-                        .background(Color.White.copy(alpha = 0.08f), CircleShape),
+                        .size(focusedIconSize)
+                        .shadow(
+                            elevation = shadowElevation,
+                            shape = CircleShape,
+                            clip = false,
+                            ambientColor = Color.Black,
+                            spotColor = Color.Black
+                        )
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.12f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Menu,
-                            contentDescription = "",
-                            tint = Color.White.copy(alpha = 0.3f),
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
+                    Icon(
+                        imageVector = defaultIcon,
+                        contentDescription = app.label,
+                        tint = Color.White.copy(alpha = 0.85f),
+                        modifier = Modifier.size(28.dp)
+                    )
                 }
             }
+        }
 
-            // Favorite indicator dot
-            if (isFavorite) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .background(FavoriteStar, CircleShape)
-                )
-            }
-
-            // App label
-            Text(
-                text = app.label,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Normal,
-                color = Color.White,
+        if (isFavorite) {
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp)
+                    .size(5.dp)
+                    .background(FavoriteStar, CircleShape)
             )
+        }
+
+        Box(
+            modifier = Modifier.height(18.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isFocused) {
+                Text(
+                    text = app.label,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White,
+                    modifier = Modifier
+                        .background(Color.Transparent)
+                        .padding(horizontal = 2.dp)
+                )
+            } else {
+                Spacer(modifier = Modifier.height(1.dp))
+            }
         }
     }
 }
 
-@OptIn(ExperimentalTvMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 fun PanelFooter(
-    currentTime: String,
-    currentDate: String,
-    onSettingsClick: () -> Unit,
-    footerBgColor: Color,
-    focusBgColor: Color,
-    focusBorderColor: Color
+    currentTime: String
 ) {
-    var settingsFocused by remember { mutableStateOf(false) }
-    val settingsScale by animateFloatAsState(
-        targetValue = if (settingsFocused) 1.06f else 1f,
-        animationSpec = tween(150)
-    )
+    val userName = "User"
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(footerBgColor, RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
+            .height(56.dp)
+            .background(Color.Transparent)
     ) {
         Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 32.dp, vertical = 16.dp), // More padding
+                .fillMaxSize()
+                .background(Color.Transparent)
+                .padding(horizontal = 24.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Left: Clock and date
-            Column(
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-                horizontalAlignment = Alignment.Start
+            Text(
+                text = currentTime,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                color = Color.White,
+                modifier = Modifier.background(Color.Transparent)
+            )
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.background(Color.Transparent)
             ) {
                 Text(
-                    text = "$currentTime  •  $currentDate",
-                    fontSize = 15.sp, // Slightly larger
+                    text = userName,
+                    fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
-                    color = Color.White
+                    color = Color.White,
+                    modifier = Modifier.background(Color.Transparent)
                 )
-            }
-
-            // Right: Settings button
-            Box(
-                modifier = Modifier
-                    .size(48.dp) // Slightly larger
-                    .onFocusChanged { settingsFocused = it.isFocused }
-                    .graphicsLayer { scaleX = settingsScale; scaleY = settingsScale }
-                    .background(if (settingsFocused) focusBgColor else Color.Transparent, RoundedCornerShape(12.dp))
-                    .border(
-                        width = if (settingsFocused) 1.dp else 0.dp,
-                        color = if (settingsFocused) focusBorderColor else Color.Transparent,
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    .combinedClickable(
-                        onClick = onSettingsClick,
-                        onLongClick = {}
-                    )
-            ) {
                 Box(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .size(32.dp)
+                        .background(Color.White.copy(alpha = 0.14f), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Settings,
-                        contentDescription = "Settings",
-                        modifier = Modifier.size(26.dp), // Slightly larger
-                        tint = if (settingsFocused) Color.White else Color.White.copy(alpha = 0.7f)
+                        imageVector = Icons.Filled.AccountCircle,
+                        contentDescription = "Profile",
+                        tint = Color.White.copy(alpha = 0.9f),
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }
@@ -665,38 +633,30 @@ fun PanelFooter(
     }
 }
 
-private fun drawableToBitmap(drawable: Drawable, targetWidth: Int, targetHeight: Int): Bitmap? {
-    return when (drawable) {
-        is BitmapDrawable -> {
-            val src = drawable.bitmap ?: return null
-            if (src.width <= targetWidth && src.height <= targetHeight) {
-                src
-            } else {
-                Bitmap.createScaledBitmap(src, targetWidth, targetHeight, true)
-            }
-        }
-        else -> {
-            val width = drawable.intrinsicWidth
-            val height = drawable.intrinsicHeight
-            if (width <= 0 || height <= 0) return null
-            val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            val scale = min(targetWidth.toFloat() / width, targetHeight.toFloat() / height)
-            val drawWidth = (width * scale).toInt()
-            val drawHeight = (height * scale).toInt()
-            val left = (targetWidth - drawWidth) / 2
-            val top = (targetHeight - drawHeight) / 2
-            drawable.setBounds(left, top, left + drawWidth, top + drawHeight)
-            drawable.draw(canvas)
-            bitmap
-        }
+fun drawableToBitmap(drawable: Drawable, targetWidth: Int, targetHeight: Int): Bitmap? {
+    return try {
+        val width = drawable.intrinsicWidth.takeIf { it > 0 } ?: targetWidth
+        val height = drawable.intrinsicHeight.takeIf { it > 0 } ?: targetHeight
+        val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val scale = min(targetWidth.toFloat() / width, targetHeight.toFloat() / height)
+        val drawWidth = (width * scale).toInt().coerceAtLeast(1)
+        val drawHeight = (height * scale).toInt().coerceAtLeast(1)
+        val left = (targetWidth - drawWidth) / 2
+        val top = (targetHeight - drawHeight) / 2
+        val copy = drawable.constantState?.newDrawable()?.mutate() ?: drawable.mutate()
+        copy.setBounds(left, top, left + drawWidth, top + drawHeight)
+        copy.draw(canvas)
+        bitmap
+    } catch (_: Exception) {
+        null
     }
 }
 
-private fun formatTime(): String {
+fun formatTime(): String {
     return SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date())
 }
 
-private fun formatDate(): String {
+fun formatDate(): String {
     return SimpleDateFormat("EEE, MMM d", Locale.getDefault()).format(Date())
 }
